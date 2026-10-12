@@ -1,5 +1,50 @@
-;;; part2 - 主源码第 74-232 行（顶层 form 14-26，共 151 个）
+;;; part2 - 主源码第 80-196 行（顶层 form 15-28，共 159 个）
 ;;; 由 tools/build_diag.py 生成；本部件可独立 LOAD，加载成功打印 OK-PART2
+(setq *OCS:TempState*    nil)   ; 临时状态（锁定层、表格再生、OSMODE 等）
+(setq *OCS:EscRequested* nil)   ; Esc/取消请求
+(setq *OCS:FaultPoint*   nil)   ; 故障注入点（OCS:TestFault 用）
+
+;;; ------------------------- 小工具 -------------------------
+
+;; 字符串包含
+(defun OCS:strContains (s sub / ls lsub)
+  (setq ls (strlen s) lsub (strlen sub))
+  (if (or (= lsub 0) (< ls lsub))
+    (= s sub)
+    (progn
+      (setq i 1 result nil)
+      (while (and (<= i (1+ (- ls lsub))) (not result))
+        (if (= (substr s i lsub) sub) (setq result T))
+        (setq i (1+ i))
+      )
+      result
+    )
+  )
+)
+
+;; 字符串中第 n 次出现 sub 的起始位置，找不到返回 nil
+(defun OCS:strFindNth (s sub n / ls lsub i c)
+  (setq ls (strlen s) lsub (strlen sub) i 1 c 0)
+  (if (= lsub 0) nil
+    (progn
+      (while (and (<= i (1+ (- ls lsub))) (< c n))
+        (if (= (substr s i lsub) sub) (setq c (1+ c)))
+        (if (< c n) (setq i (1+ i)))
+      )
+      (if (= c n) i nil)
+    )
+  )
+)
+
+;; 是否为十六进制字符
+(defun OCS:isHexChar (ch)
+  (and (= (strlen ch) 1)
+       (or (and (>= ch "0") (<= ch "9"))
+           (and (>= ch "a") (<= ch "f"))
+           (and (>= ch "A") (<= ch "F"))))
+)
+
+;; 键入十进制整数 → 十六进制字符串（用于 1071 打包）
 (defun OCS:toHex (n / digits map out q r)
   (setq digits "0123456789ABCDEF" out "")
   (if (< n 0) (setq n (+ n 4294967296)))  ; 有符号 → 无符号 32 位
@@ -65,99 +110,12 @@
 
 ;; 报错判断
 (defun OCS:errp (x)
-  (and (consp x) (equal (car x) "error"))
+  (and (OCS:consp x) (equal (car x) "error"))
 )
 
 ;; 错误信息取文本
 (defun OCS:errmsg (x)
   (if (OCS:errp x) (cdr x) "")
 )
-
-;;; =====================================================================
-;;; 纯函数：字体格式扫描器 OCS:NormalizeFontRuns
-;;; （方案第 5 节；不访问任何 CAD 对象）
-;;; =====================================================================
-
-;; 内部状态 plist：(:i 位置 :issues 问题列表 :changes 修改计数)
-;; 返回新 plist。
-
-;; 读取字段范围 %< ... >%（支持转义与嵌套 %< >%），返回 (新位置 结束位置)
-;; 若字段未闭合，记录 UNTERMINATED_FIELD 并把位置推到串尾。
-(defun OCS:scanField (s i len st / depth c j closed)
-  (setq j (1+ i) depth 1 closed nil)
-  (while (and (<= j len) (not closed))
-    (setq c (substr s j 1))
-    (cond
-      ((= c "\\")
-       (setq j (+ j 2)))
-      ((and (= c "%") (< j len) (= (substr s (1+ j) 1) "<"))
-       (setq depth (1+ depth) j (+ j 2)))
-      ((and (= c ">") (< j len) (= (substr s (1+ j) 1) "%"))
-       (setq depth (1- depth) j (+ j 2))
-       (if (<= depth 0) (setq closed T)))
-      ((= c ">") (setq j (1+ j)))
-      (T (setq j (1+ j)))
-    )
-  )
-  (if (not closed)
-    (progn
-      (setq st (OCS:addIssue st "UNTERMINATED_FIELD" i "字段 %<...>% 未闭合"))
-      (setq j (1+ len))
-    )
-  )
-  (list (1- j) j)  ; 返回 (字段结束位置(含) 下一扫描位置)
-)
-
-;; 读取字体描述至 ;（识别转义与嵌套花括号），返回 (描述 结束后位置 err)
-(defun OCS:readFontDesc (s i len / j c depth buf err)
-  (setq j i depth 0 buf "" err nil)
-  (while (and (<= j len) (not err))
-    (setq c (substr s j 1))
-    (cond
-      ((= c "\\")
-       (if (< j len)
-         (progn (setq buf (strcat buf c (substr s (1+ j) 1))) (setq j (+ j 2)))
-         (progn (setq err "字体描述以孤立反斜杠结尾") (setq j (1+ j)))
-       ))
-      ((= c "{") (setq depth (1+ depth) buf (strcat buf c) j (1+ j)))
-      ((= c "}")
-       (if (> depth 0)
-         (progn (setq depth (1- depth) buf (strcat buf c) j (1+ j)))
-         (progn (setq err "字体描述中出现多余的 }") (setq j (1+ j)))
-       ))
-      ((= c ";")
-       (if (= depth 0)
-         (setq j (1+ j))                       ; 结束
-         (progn (setq buf (strcat buf c) j (1+ j)))
-       ))
-      (T (setq buf (strcat buf c) j (1+ j)))
-    )
-  )
-  (if (and (not err) (> depth 0))
-    (setq err "字体描述中花括号未闭合")
-  )
-  (if (and (not err) (not (OCS:strEndsWithChar (OCS:chompDesc buf) ";")))
-    ;; 循环退出但没遇到 ';'：说明串已耗尽
-    (setq err "字体指令不完整（缺少分号）")
-  )
-  (list buf (1- j) err)
-)
-
-(defun OCS:chompDesc (s)
-  ;; 去掉尾部空白
-  (while (and (> (strlen s) 0)
-              (OCS:isSpaceChar (substr s (strlen s) 1)))
-    (setq s (substr s 1 (1- (strlen s))))
-  )
-  s
-)
-
-(defun OCS:isSpaceChar (c)
-  (or (= c " ") (= c "\t") (= c "\n") (= c "\r"))
-)
-
-(defun OCS:strEndsWithChar (s c)
-  (and (> (strlen s) 0) (= (substr s (strlen s) 1) c))
-)
-(princ "\nOK-PART2 lines 74-232")
+(princ "\nOK-PART2 lines 80-196")
 (princ)

@@ -1,5 +1,121 @@
-;;; part4 - 主源码第 475-711 行（顶层 form 40-52，共 151 个）
+;;; part4 - 主源码第 410-675 行（顶层 form 43-56，共 159 个）
 ;;; 由 tools/build_diag.py 生成；本部件可独立 LOAD，加载成功打印 OK-PART4
+(defun OCS:equalsIgnoreCase (a b)
+  (= (OCS:lower a) (OCS:lower b))
+)
+
+(defun OCS:lower (s / out i ch up lo)
+  (setq up "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+        lo "abcdefghijklmnopqrstuvwxyz"
+        out "" i 1)
+  (while (<= i (strlen s))
+    (setq ch (substr s i 1))
+    (setq p (vl-position ch (OCS:splitChars up)))
+    (if p
+      (setq out (strcat out (substr lo (1+ p) 1)))
+      (setq out (strcat out ch))
+    )
+    (setq i (1+ i))
+  )
+  out
+)
+
+;;; 主扫描器（纯函数）
+;;; 输入：
+;;;   s       ： 文字原始内容（MTEXT 全量原始串 / 属性内容等）
+;;;   target  ： (list (cons :family "SimSun") (cons :charSet 134)
+;;;                     (cons :pitchFamily 36) (cons :appendParams T))
+;;; 输出 plist：
+;;;   (:text 新内容 :changes 修改数 :issues ((code pos len msg)...) )
+;;; 规则（方案第 5 节）：
+;;;   - 仅替换有效 \f、\F 指令中的字体族；
+;;;   - %<...>% 字段整体保护（其中 \f 不是字体指令）；
+;;;   - 转义 \\ 与 \{ \} 不作为格式开关；
+;;;   - 保留其他一切格式码与原文字符；
+;;;   - 解析失败只记录问题，不删除任何段落。
+;;; =====================================================================
+(defun OCS:NormalizeFontRuns (s target / st len out i c r desc endp err fam newDesc next)
+  (if (not (OCS:stringp s))
+    (list "text" s "changes" 0 "issues" (list (list "BAD_INPUT" 0 0 "输入不是字符串")))
+    (progn
+      (setq len (strlen s))
+      (setq st  (list "i" 1 "issues" nil "changes" 0 "len" len))
+      (setq out "")
+      (setq i 1)
+      (while (<= i len)
+        (setq c (substr s i 1))
+        (cond
+          ;; 转义序列（\\、\{、\}、\; 等）：整体原样输出，不作为格式开关
+          ;; 注意顺序：先判断转义，再判断 \f/\F（\f 也是合法转义之一，
+          ;; 但作为格式指令时其后是描述文本，不会整体走转义分支）
+          ((and (= c "\\") (< i len) (OCS:isEscapable (substr s (1+ i) 1))
+                (not (and (or (= (substr s (1+ i) 1) "f")
+                              (= (substr s (1+ i) 1) "F"))
+                          (not (OCS:alphaChar (substr s (+ i 2) 1))))))
+           (setq out (strcat out c (substr s (1+ i) 1)))
+           (setq i (+ i 2))
+          )
+          ;; 字段范围保护：%< ... >% 整体原样输出
+          ((and (= c "%") (< i len) (= (substr s (1+ i) 1) "<"))
+           (setq next (OCS:scanFieldEnd s i len))
+           (setq st (OCS:scanFieldSt s i len st))
+           (setq out (strcat out (substr s i (1+ (- next i)))))
+           (setq i next)
+          )
+          ;; 字体切换指令 \f / \F（后随字符不能是字母，防止误匹配）
+          ((and (= c "\\") (< i len)
+                (or (= (substr s (1+ i) 1) "f") (= (substr s (1+ i) 1) "F"))
+                (not (OCS:alphaChar (substr s (+ i 2) 1))))
+           (setq r (OCS:readFontDesc s (+ i 2) len))
+           (setq desc (car r) endp (cadr r) err (caddr r))
+           (if err
+             (progn
+               (setq st (OCS:addIssue st "UNTERMINATED_FONT" i err))
+               ;; 保留原文，不删除任何段落（本指令按原样输出）
+               (setq out (strcat out c (substr s (1+ i) 1)))
+               (setq i (+ i 2))
+             )
+             (progn
+               (setq fam (car (OCS:splitDesc (OCS:chompDesc desc))))
+               (if (or (= fam "") (OCS:isTargetFamily fam target))
+                 (progn
+                   ;; 已是目标族：原样保留（幂等，不重复追加参数）
+                   (setq out (strcat out c (substr s (1+ i) 1) desc ";"))
+                   (setq i (1+ endp))
+                 )
+                 (progn
+                   (setq newDesc (OCS:rewriteDesc (OCS:chompDesc desc) target))
+                   (setq out (strcat out c (substr s (1+ i) 1) newDesc ";"))
+                   (setq st (OCS:bumpChanges st))
+                   (setq i (1+ endp))
+                 )
+               )
+             )
+           )
+          )
+          (T
+           (setq out (strcat out c))
+           (setq i (1+ i))
+          )
+        )
+      )
+      (list "text" out
+            "changes" (OCS:assocd "changes" st 0)
+            "issues" (OCS:assocd "issues" st nil))
+    )
+  )
+)
+
+;; 字体指令边界：\f 后随字符不能是字母（防止把 \fx 之类当字体指令）
+(defun OCS:alphaChar (ch)
+  (and (= (strlen ch) 1)
+       (or (and (>= ch "a") (<= ch "z"))
+           (and (>= ch "A") (<= ch "Z"))))
+)
+
+;; 转义字符：\ 后面这些字符属于“合法转义”，整体原样保留
+;; 注意：f/F 不在此列，\f \F 要走字体指令分支（由 NormalizeFontRuns 的
+;; 顺序保证：转义分支已排除 \f \F 后随非字母的情形）
 (defun OCS:isEscapable (ch / lst)
   (setq lst (list "\\" "{" "}" ";" "P" "p" "H" "W" "T" "Q" "C" "c"
                    "S" "s" "A" "a" "L" "l" "~" "-" "+" " " "n" "^"))
@@ -124,7 +240,7 @@
   ;; 若键已存在则替换，否则追加（保证 plist 键唯一）
   (setq out nil done nil)
   (foreach pair res
-    (if (and (not done) (consp pair) (equal (car pair) key))
+    (if (and (not done) (OCS:consp pair) (equal (car pair) key))
       (progn (setq out (append out (list (cons key val)))) (setq done T))
       (setq out (append out (list pair)))
     )
@@ -150,92 +266,5 @@
     (T nil)
   )
 )
-
-;; 字体文件来源：优先写入可被目标 CAD 解析的标识（文件名），
-;; 若名称解析失败回退到绝对路径（仅作为最后手段并在报告中记录）。
-(defun OCS:fontFileSource ( pair )
-  (if (consp pair) (cadr pair) pair)
-)
-
-;; 在临时样式上验证写入/读回
-(defun OCS:verifyFontWrite (res / doc name ent o r f bf old1071)
-  (setq doc (OCS:activeDoc))
-  (if (not doc)
-    (setq res (OCS:addProblem res "error" "无法获取活动文档（ActiveX 不可用）"))
-    (progn
-      (setq name (OCS:tempStyleName))
-      (OCS:deleteStyleIfExists name)
-      (setq r (vl-catch-all-apply 'vla-AddTextStyle
-                (list doc name (OCS:styleBaseFont) "vlax-true")))
-      (if (vl-catch-all-error-p r)
-        (setq res (OCS:addProblem res "error"
-                    (strcat "创建试验文字样式失败：" (vl-catch-all-error-message r))))
-        (progn
-          (setq ent (tblobjname "STYLE" name))
-          (if (not ent)
-            (setq res (OCS:addProblem res "error" "试验文字样式创建后未找到 STYLE 记录"))
-            (progn
-              (setq o (vlax-ename->vla-object ent))
-              ;; FontFile 写入（先文件名）
-              (setq f (OCS:getVal res "fontFile"))
-              (setq bf (if (consp f) (cadr f) f))
-              (setq r (vl-catch-all-apply 'vla-put-FontFile (list o bf)))
-              (if (vl-catch-all-error-p r)
-                (progn
-                  ;; 名称失败 → 绝对路径
-                  (setq r (vl-catch-all-apply 'vla-put-FontFile (list o (car f))))
-                  (if (vl-catch-all-error-p r)
-                    (setq res (OCS:addProblem res "error"
-                      (strcat "FontFile 写入失败：" (vl-catch-all-error-message r))))
-                    (progn
-                      (setq res (OCS:putPair res "fontFileSource" (strcat (car f) " (绝对路径回退)")))
-                    ))
-                )
-              )
-              ;; SetFont（字体族名 + 字符集 + pitch/family）
-              (if (not (OCS:hasError res))
-                (progn
-                  (setq r (vl-catch-all-apply 'vla-SetFont
-                    (list o "SimSun" "vlax-false" "vlax-false"
-                          (OCS:getVal res "charSet")
-                          (OCS:getVal res "pitchFamily"))))
-                  (if (vl-catch-all-error-p r)
-                    (setq res (OCS:addProblem res "error"
-                      (strcat "SetFont(SimSun) 失败：" (vl-catch-all-error-message r))))
-                  )
-                )
-              )
-              ;; 写入后立即读回验证：FontFile 与 LastFontFile
-              (if (not (OCS:hasError res))
-                (progn
-                  (setq r (vl-catch-all-apply 'vla-get-FontFile (list o)))
-                  (if (or (vl-catch-all-error-p r) (= r ""))
-                    (setq res (OCS:addProblem res "error" "FontFile 读回为空，字体未被 CAD 解析"))
-                    (setq res (OCS:putPair res "fontFileReadback" r))
-                  )
-                )
-              )
-              ;; 大字体清空验证（STYLE DXF 组码 4）
-              (if (not (OCS:hasError res))
-                (setq res (OCS:verifyBigFontClear res ent name))
-              )
-              ;; 记录写入顺序证据
-              (setq res (OCS:putPair res "writeOrder" "FontFile → SetFont → 大字体清空(组码4) → 读回"))
-              ;; 删除试验样式
-              (OCS:deleteStyleIfExists name)
-            )
-          )
-        )
-      )
-    )
-  )
-  res
-)
-
-(defun OCS:hasError (res / p)
-  (setq p (assoc "problem" res))
-  ;; 扫描列表中是否有 :error
-  (OCS:findError res)
-)
-(princ "\nOK-PART4 lines 475-711")
+(princ "\nOK-PART4 lines 410-675")
 (princ)

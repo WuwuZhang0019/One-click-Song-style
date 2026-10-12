@@ -1,58 +1,5 @@
-;;; part11 - 主源码第 1872-2185 行（顶层 form 131-143，共 151 个）
+;;; part11 - 主源码第 1978-2443 行（顶层 form 141-154，共 159 个）
 ;;; 由 tools/build_diag.py 生成；本部件可独立 LOAD，加载成功打印 OK-PART11
-(defun OCS:reportSet (report pairs / out updated)
-  (setq out nil)
-  (foreach pair pairs
-    (setq updated nil out nil)
-    (foreach item report
-      (if (and (consp item) (equal (car item) (car pair)) (not updated))
-        (progn (setq out (append out (list pair))) (setq updated T))
-        (setq out (append out (list item)))
-      )
-    )
-    (if (not updated) (setq out (append out (list pair))))
-    (setq report out)
-  )
-  report
-)
-
-(defun OCS:problemsOf (res / out)
-  (setq out nil)
-  (foreach item res
-    (if (and (consp item) (equal (car item) "problem")
-             (consp (cdr item)) (equal (cadr item) "error"))
-      (setq out (append out (list (caddr item))))
-    )
-  )
-  ;; 字体解析中的问题
-  (foreach item (OCS:getVal res "font" nil)
-    (if (and (consp item) (equal (car item) "problem")
-             (consp (cdr item)) (equal (cadr item) "error"))
-      (setq out (append out (list (caddr item))))
-    )
-  )
-  out
-)
-
-;;; =====================================================================
-;;; 再生与读回 OCS:VerifyDrawing
-;;; =====================================================================
-
-(defun OCS:VerifyDrawing ( / doc r)
-  (setq doc (OCS:activeDoc))
-  (if (not doc)
-    (list "ok" nil "error" "无法获取活动文档")
-    (progn
-      (setq r (vl-catch-all-apply 'vla-Regen (list doc 1))) ; acAllViewports
-      (if (vl-catch-all-error-p r)
-        (list "ok" nil "error" (strcat "再生失败：" (vl-catch-all-error-message r)))
-        (OCS:readbackStyles)
-      )
-    )
-  )
-)
-
-;; 样式读回：字体族为宋体、大字体为空、原参数一致
 (defun OCS:readbackStyles ( / ok details st ent e)
   (setq ok T details nil)
   (foreach st (OCS:assocd "styles" *OCS:Plan* nil)
@@ -141,7 +88,7 @@
   (setq ok T)
   ;; 恢复临时解锁的图层（原锁定状态）
   (foreach item *OCS:TempState*
-    (if (and (consp item) (equal (car item) "layer"))
+    (if (and (OCS:consp item) (equal (car item) "layer"))
       (progn
         (setq lay (OCS:assocd "obj" item nil))
         (if lay
@@ -207,7 +154,7 @@
 
 (defun OCS:fmt (x / out)
   (cond
-    ((stringp x) x)
+    ((OCS:stringp x) x)
     ((numberp x) (rtos x 2 6))
     ((null x) "nil")
     ((listp x)
@@ -223,6 +170,76 @@
 ;;; =====================================================================
 ;;; 用户命令 c:YJST：方案第 8 节流程
 ;;; =====================================================================
+
+;;; 诊断命令 c:OCS_TEST：逐项跑预检步骤，精确定位哪一步挂了
+(defun c:OCS_TEST ( / res acadObj undoctl doc ro font probs okv)
+  (princ "\n==== OCS 预检分步诊断 ====")
+  ;; 复刻 OCS:Preflight 每一步，逐步打印
+  (setq res (list "ok" nil))
+  (princ (strcat "\n[1] ACADVER = " (getvar "ACADVER")))
+  (princ (strcat "\n[2] PRODUCT  = " (getvar "PRODUCT")))
+  (princ (strcat "\n[3] LISPSYS  = " (vl-prin1-to-string (getvar "LISPSYS"))))
+  (princ (strcat "\n[4] PLATFORM = " (getvar "PLATFORM")))
+  (setq acadObj (vl-catch-all-apply 'vlax-get-acad-object nil))
+  (if (vl-catch-all-error-p acadObj)
+    (princ "\n[5] vlax-get-acad-object = ERROR: Visual LISP/ActiveX 不可用")
+    (princ "\n[5] vlax-get-acad-object = OK")
+  )
+  (setq undoctl (getvar "UNDOCTL"))
+  (princ (strcat "\n[6] UNDOCTL = " (itoa undoctl)))
+  (if (= 0 (logand undoctl 1))
+    (princ "\n[7] UNDO 检查 = 失败（撤销不可用）")
+    (princ "\n[7] UNDO 检查 = OK")
+  )
+  (setq doc (vl-catch-all-apply 'vla-get-ActiveDocument (list acadObj)))
+  (if (vl-catch-all-error-p doc)
+    (princ "\n[8] ActiveDocument = ERROR")
+    (progn
+      (princ "\n[8] ActiveDocument = OK")
+      (setq ro (vl-catch-all-apply 'vla-get-ReadOnly (list doc)))
+      (if (vl-catch-all-error-p ro)
+        (princ "\n[9] ReadOnly = ERROR（接口可能不存在）")
+        (princ (strcat "\n[9] ReadOnly = " (if ro "TRUE(只读)" "FALSE(可写)")))
+      )
+    )
+  )
+  ;; 字体解析
+  (setq font (vl-catch-all-apply 'OCS:ResolveSongFont nil))
+  (if (vl-catch-all-error-p font)
+    (princ (strcat "\n[10] ResolveSongFont = ERROR: " (vl-catch-all-error-message font)))
+    (princ (strcat "\n[10] ResolveSongFont = " (vl-prin1-to-string font)))
+  )
+  ;; Blocks 接口
+  (if (vl-catch-all-error-p doc)
+    (princ "\n[11] GetBlocks = 跳过（无文档）")
+    (progn
+      (setq okv (vl-catch-all-apply 'vlax-method-applicable-p (list doc "GetBlocks")))
+      (if (vl-catch-all-error-p okv)
+        (princ "\n[11a] vlax-method-applicable-p(字符串) = ERROR")
+        (princ (strcat "\n[11a] applicable-p \"GetBlocks\" = " (if okv "T" "NIL")))
+      )
+      (setq okv (vl-catch-all-apply 'vlax-method-applicable-p (list doc 'GetBlocks)))
+      (if (vl-catch-all-error-p okv)
+        (princ "\n[11b] vlax-method-applicable-p(符号) = ERROR")
+        (princ (strcat "\n[11b] applicable-p 'GetBlocks = " (if okv "T" "NIL")))
+      )
+      (setq okv (vl-catch-all-apply 'vla-get-Blocks (list doc)))
+      (if (vl-catch-all-error-p okv)
+        (princ (strcat "\n[11c] vla-get-Blocks = ERROR: " (vl-catch-all-error-message okv)))
+        (progn
+          (princ "\n[11c] vla-get-Blocks = OK")
+          (setq okv (vl-catch-all-apply 'vla-get-Count (list okv)))
+          (if (vl-catch-all-error-p okv)
+            (princ "\n[11d] vla-get-Count = ERROR")
+            (princ (strcat "\n[11d] Blocks Count = " (itoa okv)))
+          )
+        )
+      )
+    )
+  )
+  (princ "\n==== 诊断结束；把以上输出发给开发 ====")
+  (princ)
+)
 
 (defun c:YJST ( / )
   (if *OCS:Running*
@@ -314,5 +331,140 @@
     )
   )
 )
-(princ "\nOK-PART11 lines 1872-2185")
+
+;; 执行写入与检查（含回滚路径）
+(defun OCS:executeWrites ( / report stylesRes hostsRes verifyRes wrote)
+  (setq report (OCS:makeReport nil))
+  ;; 临时解锁
+  (OCS:lockLayersNeeded)
+  (OCS:unlockTempLayers)
+  ;; 样式写入
+  (setq stylesRes (OCS:applyAllStyles))
+  (if (OCS:assocd "error" stylesRes nil)
+    (setq report (OCS:appendError report "STYLE" (OCS:assocd "error" stylesRes ""))))
+  ;; 内容写入
+  (setq hostsRes (OCS:applyAllHosts))
+  ;; 其余统计（report 中已预置同名键，必须替换而非追加）
+  (setq report (OCS:reportSet report
+                 (list
+                   (cons "stylesScanned" (length (OCS:assocd "styles" *OCS:Plan* nil)))
+                   (cons "stylesModified" (OCS:assocd "modified" stylesRes 0))
+                   (cons "stylesXref" (length (OCS:assocd "xrefStyle" *OCS:Plan* nil)))
+                   (cons "stylesShape" (length (OCS:assocd "shape" *OCS:Plan* nil)))
+                   (cons "hostsScanned" (length (OCS:assocd "hosts" *OCS:Plan* nil)))
+                   (cons "fontRunsChanged" (OCS:assocd "changes" hostsRes 0))
+                   (cons "attribs" (OCS:assocd "attribs" (OCS:assocd "stats" *OCS:Plan*) 0))
+                   (cons "blocks" (OCS:assocd "blocks" (OCS:assocd "stats" *OCS:Plan*) 0))
+                   (cons "xrefBlocks" (OCS:assocd "xrefBlocks" (OCS:assocd "stats" *OCS:Plan*) 0))
+                   (cons "displayBlocks" (OCS:assocd "displayBlocks" (OCS:assocd "stats" *OCS:Plan*) 0))
+                   (cons "tableContents" (OCS:assocd "tableContents" hostsRes 0))
+                   (cons "uncovered" (OCS:assocd "unknown" (OCS:assocd "stats" *OCS:Plan*) 0))
+                   (cons "uncoveredDetail" (OCS:assocd "skipped" (OCS:assocd "stats" *OCS:Plan*) nil))
+                 )))
+  (if (OCS:assocd "error" hostsRes nil)
+    (setq report (OCS:appendError report "HOST" (OCS:assocd "error" hostsRes ""))))
+  ;; 临时状态恢复
+  (OCS:restoreTempState)
+  ;; 中途错误（写入失败/解析问题）→ 回滚本次业务写入
+  (if (OCS:assocd "errors" report 0)
+    (progn
+      (setq report (OCS:reportSet report (list (cons "status" "失败已回滚"))))
+      (if (not (OCS:Rollback))
+        (setq report (OCS:reportSet report (list (cons "recoverFailed" 1))))
+      )
+    )
+    (progn
+      ;; 再生 + 读回
+      (OCS:TestFault "regen-check")
+      (setq verifyRes (OCS:VerifyDrawing))
+      (if (not (OCS:assocd "ok" verifyRes T))
+        (progn
+          (setq report (OCS:appendError report "VERIFY" (OCS:assocd "error" verifyRes "")))
+          ;; 读回不符 → 回滚本次修改
+          (setq report (OCS:reportSet report (list (cons "status" "失败已回滚"))))
+          (if (not (OCS:Rollback))
+            (setq report (OCS:reportSet report (list (cons "recoverFailed" 1))))
+          )
+        )
+        (progn
+          (OCS:endUndoGroup)
+          ;; 状态判定（方案第 12 节）
+          (setq report (OCS:reportSet report
+            (list (cons "status"
+              (cond
+                ((> (OCS:assocd "errors" report 0) 0) "失败已回滚")
+                ((> (OCS:assocd "uncovered" report 0) 0) "部分完成")
+                ((and (= 0 (OCS:assocd "stylesModified" report 0))
+                      (= 0 (OCS:assocd "fontRunsChanged" report 0)))
+                 "无需修改")
+                (T "已完成")
+              )))))
+        )
+      )
+    )
+  )
+  (setq report (OCS:reportSet report
+                 (list (cons "dwg" (getvar "DWGPREFIX"))
+                       (cons "cadver" (getvar "ACADVER"))
+                       (cons "family" "SimSun"))))
+  report
+)
+
+(defun OCS:applyAllStyles ( / modified err)
+  (setq modified 0 err nil)
+  (foreach st (OCS:assocd "styles" *OCS:Plan* nil)
+    (if (not err)
+      (progn
+        (OCS:TestFault "style-write")
+        (setq r (OCS:ApplyStyle (OCS:activeDoc) st))
+        (if (OCS:assocd "ok" r nil)
+          (setq modified (1+ modified))
+          (setq err (OCS:assocd "error" r "未知错误"))
+        )
+      )
+    )
+  )
+  (list "modified" modified "error" err)
+)
+
+(defun OCS:applyAllHosts ( / changes tableContents err data new r)
+  (setq changes 0 tableContents 0 err nil)
+  (foreach host (OCS:assocd "hosts" *OCS:Plan* nil)
+    (if (not err)
+      (progn
+        (setq data (OCS:ReadHost host))
+        (if (OCS:assocd "error" data nil)
+          (setq err (strcat (OCS:assocd "handle" host "?") ": " (OCS:assocd "error" data "")))
+          (if (not (OCS:assocd "skip" data nil))
+            (progn
+              (setq new (OCS:NormalizeFontRuns (OCS:assocd "text" data "") (OCS:fontTarget)))
+              (if (OCS:assocd "issues" new nil)
+                (setq err (strcat (OCS:assocd "handle" host "?") ": 内容解析问题 "
+                                   (OCS:fmt (OCS:assocd "issues" new nil))))
+              )
+              (if (and (not err) (> (OCS:assocd "changes" new 0) 0))
+                (progn
+                  (OCS:TestFault "content-write")
+                  (setq data (OCS:putPair data "text" (OCS:assocd "text" new "")))
+                  (setq r (OCS:WriteHost host data))
+                  (if (OCS:assocd "ok" r nil)
+                    (progn
+                      (setq changes (+ changes (OCS:assocd "changes" new 0)))
+                      (if (equal (OCS:assocd "kind" host) "table")
+                        (setq tableContents (+ tableContents (OCS:assocd "contents" r 0)))
+                      )
+                    )
+                    (setq err (strcat (OCS:assocd "handle" host "?") ": " (OCS:assocd "error" r "")))
+                  )
+                )
+              )
+            )
+          )
+        )
+      )
+    )
+  )
+  (list "changes" changes "tableContents" tableContents "error" err)
+)
+(princ "\nOK-PART11 lines 1978-2443")
 (princ)

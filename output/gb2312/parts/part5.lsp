@@ -1,10 +1,94 @@
-;;; part5 - 主源码第 712-905 行（顶层 form 53-65，共 151 个）
+;;; part5 - 主源码第 679-917 行（顶层 form 57-70，共 159 个）
 ;;; 由 tools/build_diag.py 生成；本部件可独立 LOAD，加载成功打印 OK-PART5
+(defun OCS:fontFileSource ( pair )
+  (if (OCS:consp pair) (cadr pair) pair)
+)
+
+;; 在临时样式上验证写入/读回
+(defun OCS:verifyFontWrite (res / doc name ent o r f bf old1071)
+  (setq doc (OCS:activeDoc))
+  (if (not doc)
+    (setq res (OCS:addProblem res "error" "无法获取活动文档（ActiveX 不可用）"))
+    (progn
+      (setq name (OCS:tempStyleName))
+      (OCS:deleteStyleIfExists name)
+      (setq r (vl-catch-all-apply 'vla-AddTextStyle
+                (list doc name (OCS:styleBaseFont) "vlax-true")))
+      (if (vl-catch-all-error-p r)
+        (setq res (OCS:addProblem res "error"
+                    (strcat "创建试验文字样式失败：" (vl-catch-all-error-message r))))
+        (progn
+          (setq ent (tblobjname "STYLE" name))
+          (if (not ent)
+            (setq res (OCS:addProblem res "error" "试验文字样式创建后未找到 STYLE 记录"))
+            (progn
+              (setq o (vlax-ename->vla-object ent))
+              ;; FontFile 写入（先文件名）
+              (setq f (OCS:getVal res "fontFile"))
+              (setq bf (if (OCS:consp f) (cadr f) f))
+              (setq r (vl-catch-all-apply 'vla-put-FontFile (list o bf)))
+              (if (vl-catch-all-error-p r)
+                (progn
+                  ;; 名称失败 → 绝对路径
+                  (setq r (vl-catch-all-apply 'vla-put-FontFile (list o (car f))))
+                  (if (vl-catch-all-error-p r)
+                    (setq res (OCS:addProblem res "error"
+                      (strcat "FontFile 写入失败：" (vl-catch-all-error-message r))))
+                    (progn
+                      (setq res (OCS:putPair res "fontFileSource" (strcat (car f) " (绝对路径回退)")))
+                    ))
+                )
+              )
+              ;; SetFont（字体族名 + 字符集 + pitch/family）
+              (if (not (OCS:hasError res))
+                (progn
+                  (setq r (vl-catch-all-apply 'vla-SetFont
+                    (list o "SimSun" "vlax-false" "vlax-false"
+                          (OCS:getVal res "charSet")
+                          (OCS:getVal res "pitchFamily"))))
+                  (if (vl-catch-all-error-p r)
+                    (setq res (OCS:addProblem res "error"
+                      (strcat "SetFont(SimSun) 失败：" (vl-catch-all-error-message r))))
+                  )
+                )
+              )
+              ;; 写入后立即读回验证：FontFile 与 LastFontFile
+              (if (not (OCS:hasError res))
+                (progn
+                  (setq r (vl-catch-all-apply 'vla-get-FontFile (list o)))
+                  (if (or (vl-catch-all-error-p r) (= r ""))
+                    (setq res (OCS:addProblem res "error" "FontFile 读回为空，字体未被 CAD 解析"))
+                    (setq res (OCS:putPair res "fontFileReadback" r))
+                  )
+                )
+              )
+              ;; 大字体清空验证（STYLE DXF 组码 4）
+              (if (not (OCS:hasError res))
+                (setq res (OCS:verifyBigFontClear res ent name))
+              )
+              ;; 记录写入顺序证据
+              (setq res (OCS:putPair res "writeOrder" "FontFile → SetFont → 大字体清空(组码4) → 读回"))
+              ;; 删除试验样式
+              (OCS:deleteStyleIfExists name)
+            )
+          )
+        )
+      )
+    )
+  )
+  res
+)
+
+(defun OCS:hasError (res / p)
+  (setq p (assoc "problem" res))
+  ;; 扫描列表中是否有 :error
+  (OCS:findError res)
+)
 (defun OCS:findError (res / found)
   (setq found nil)
   (foreach item res
-    (if (and (consp item) (equal (car item) "problem")
-             (consp (cdr item)) (equal (cadr item) "error"))
+    (if (and (OCS:consp item) (equal (car item) "problem")
+             (OCS:consp (cdr item)) (equal (cadr item) "error"))
       (setq found T)
     )
   )
@@ -124,8 +208,10 @@
     (OCS:addProblem res "error" "无法获取活动文档")
     (progn
       (setq ro (vl-catch-all-apply 'vla-get-ReadOnly (list doc)))
+      ;; 只读降级为警告：部分克隆引擎（天正/浩辰内核）该属性存根恒返 TRUE，
+      ;; 若图纸真只读，后续写入会被 vl-catch-all 拦截并走回滚，不会损坏图纸。
       (if (and (not (vl-catch-all-error-p ro)) ro)
-        (OCS:addProblem res "error" "当前图纸为只读，不能修改")
+        (OCS:addProblem res "warn" "文档报告为只读（引擎可能误报；写入失败将自动回滚）")
         res
       )
     )
@@ -137,7 +223,7 @@
   (if (not doc)
     (OCS:addProblem res "error" "ActiveX 文档不可用")
     (progn
-      (if (not (vlax-method-applicable-p doc 'GetBlocks))
+      (if (not (OCS:methodOk doc 'vla-get-Blocks))
         (setq res (OCS:addProblem res "error" "Blocks 集合接口不可用")))
       res
     )
@@ -153,46 +239,5 @@
     )
   )
 )
-(defun OCS:activeDoc* ()
-  (vla-get-ActiveDocument (vlax-get-acad-object))
-)
-
-;;; =====================================================================
-;;; 样式收集 OCS:CollectStyles
-;;; 方案第 3 节：DXF 70 位 1 = 形文件记录，位 16 = 外参依赖；
-;;; 不按名称含 "|" 判断；Standard 与注释性样式照常处理。
-;;; =====================================================================
-
-(defun OCS:CollectStyles ( / res ent lst e flg name)
-  (setq res (list "normal" nil "shape" nil "xref" nil "vertical" nil "count" 0))
-  (setq ent (tblnext "STYLE" T))
-  (while ent
-    (setq flg (OCS:assocd 70 ent 0)
-          name (OCS:assocd 2 ent ""))
-    (cond
-      ((/= 0 (logand flg 1))
-       ;; 形文件记录（LOAD 请求）→ 跳过并分类记录
-       (setq res (OCS:lstAppend res "shape" name))
-      )
-      ((/= 0 (logand flg 16))
-       ;; 外部参照依赖记录 → 跳过并分类记录
-       (setq res (OCS:lstAppend res "xref" name))
-      )
-      (T
-       (setq res (OCS:lstAppend res "normal"
-                  (list "name" name
-                        "flags" flg
-                        "vertical" (/= 0 (logand flg 4))
-                        "annotative" (OCS:isAnnotativeStyle ent)
-                        "bigFontBefore" (OCS:assocd 4 ent "")
-                        "fontFileBefore" (OCS:assocd 3 ent "")
-                        "dxf" ent)))
-      )
-    )
-    (setq ent (tblnext "STYLE" nil))
-  )
-  (setq res (OCS:putPair res "count" (length (OCS:getVal res "normal"))))
-  res
-)
-(princ "\nOK-PART5 lines 712-905")
+(princ "\nOK-PART5 lines 679-917")
 (princ)

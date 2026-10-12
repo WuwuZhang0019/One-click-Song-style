@@ -96,9 +96,9 @@
 | UTF-8 开发源码 | `one-click-simsun.lsp`（无 BOM，严格 UTF-8 解码通过） |
 | 不可编码字符清理 | 源码中 8 处 `U+2014` 破折号改为 GB2312 可表示写法；`find_non_gb2312.py` 报 0 |
 | 交付文件 | `output/gb2312/one-click-simsun.lsp`，严格 GB2312、无 BOM |
-| SHA-256 | `634d84844e3a6a54a104d3932d94c3410c2dc55763308905287870fa846cd75e`（2026-10-13T00:48:16+08:00 重建；修复两处引擎兼容问题：①2358 行 `(setq fail)` 单参数 setq 改裸 `fail`（读入器拒收）；②全文件 645 处 `:keyword` plist 键改字符串键 + 44 处 `eq` 改 `equal`——目标引擎读入器把 `:xxx` 读成 nil（探针 p04 因 nil=nil 虚空通过），导致运行时 plist 全部失效、YJST 恒报「预检失败」；此前一版 `ceb6c348…c4e57` 因此被替换） |
+| SHA-256 | `4f924cadcf60adfb670c965bd4bd22b2195b7a99316a6b53701c350a4ba8729d`（2026-10-13T01:16:00+08:00 重建；新增引擎兼容垫片 OCS:consp/OCS:stringp/OCS:fail/OCS:methodOk，替换 16 处 consp、2 处 stringp、1 处 error、1 处 vlax-method-applicable-p；只读检查降级为 warn；此前一版 `05aba96e…756a` 因缺 consp 致预检恒失败被替换） |
 | 构建工具样例检查 | `tools/test_build_gb2312.py` 5 项 PASS（中文转换、BOM 去除、行列报错且不覆盖旧交付、非法 UTF-8、源缺失） |
-| 静态检查 | `check_lisp.py` PASS（151 form / 139 函数 / 15 用例） |
+| 静态检查 | `check_lisp.py` PASS（152 form / 144 函数 / 15 用例） |
 | 目标 CAD 加载 GB2312 文件 | 曾报 `no function definition: FN`，已定位修复（见 GB2312 说明第 9 节：`defmacro` 死代码被旧引擎当调用求值，已删除；加载提示防御化）；**修复后复测未验证** |
 | YJST 功能复测（GB2312 版） | **未验证** |
 

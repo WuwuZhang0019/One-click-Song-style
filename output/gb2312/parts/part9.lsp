@@ -1,10 +1,5 @@
-;;; part9 - 主源码第 1465-1718 行（顶层 form 105-117，共 151 个）
+;;; part9 - 主源码第 1523-1795 行（顶层 form 113-126，共 159 个）
 ;;; 由 tools/build_diag.py 生成；本部件可独立 LOAD，加载成功打印 OK-PART9
-(defun OCS:leaderAnnotation (e / r)
-  (setq r (OCS:safeProp e 'Annotation))
-  r
-)
-
 (defun OCS:readTable (host e / rows cols)
   (setq rows (OCS:safeProp e 'Rows)
         cols  (OCS:safeProp e 'Columns))
@@ -254,5 +249,29 @@
   (setq lst (OCS:errmsg r))
   (if (listp lst) lst (list "msg" lst))
 )
-(princ "\nOK-PART9 lines 1465-1718")
+
+(defun OCS:tableGetText (e row col content / r msg)
+  (setq r (vl-catch-all-apply 'vla-GetTextString (list e row col content)))
+  (cond
+    ((vl-catch-all-error-p r)
+     (setq msg (vl-catch-all-error-message r))
+     (cons "error"
+           (list "code" (if (or (OCS:strContains msg "8002000B")
+                               (OCS:strContains msg "0x8002000B")
+                               (OCS:strContains msg "超出")
+                               (OCS:strContains msg "index"))
+                           "OUT_OF_CONTENT" "READ_FAIL")
+                 "msg" msg)))
+    (T (list r))
+  )
+)
+
+(defun OCS:tableSetText (e row col content txt / r)
+  (setq r (vl-catch-all-apply 'vla-SetTextString (list e row col content txt)))
+  (if (vl-catch-all-error-p r)
+    (cons "error" (vl-catch-all-error-message r))
+    T
+  )
+)
+(princ "\nOK-PART9 lines 1523-1795")
 (princ)

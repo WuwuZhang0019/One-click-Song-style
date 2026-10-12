@@ -1,5 +1,13 @@
-;;; part7 - 主源码第 1090-1226 行（顶层 form 79-91，共 151 个）
+;;; part7 - 主源码第 1135-1279 行（顶层 form 85-98，共 159 个）
 ;;; 由 tools/build_diag.py 生成；本部件可独立 LOAD，加载成功打印 OK-PART7
+(defun OCS:isUnknownClass (typ)
+  (or (OCS:strContains typ "Proxy")
+      (OCS:strContains typ "ACAD_PROXY")
+      (and (OCS:strContains typ "AcDb")
+           (not (OCS:knownClass typ)))
+  )
+)
+
 (defun OCS:knownClass (typ)
   (OCS:strContains typ "Text")
 )
@@ -137,5 +145,5 @@
     )
   )
 )
-(princ "\nOK-PART7 lines 1090-1226")
+(princ "\nOK-PART7 lines 1135-1279")
 (princ)

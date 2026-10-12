@@ -1,5 +1,83 @@
-;;; part3 - 主源码第 235-470 行（顶层 form 27-39，共 151 个）
+;;; part3 - 主源码第 208-408 行（顶层 form 29-42，共 159 个）
 ;;; 由 tools/build_diag.py 生成；本部件可独立 LOAD，加载成功打印 OK-PART3
+(defun OCS:scanField (s i len st / depth c j closed)
+  (setq j (1+ i) depth 1 closed nil)
+  (while (and (<= j len) (not closed))
+    (setq c (substr s j 1))
+    (cond
+      ((= c "\\")
+       (setq j (+ j 2)))
+      ((and (= c "%") (< j len) (= (substr s (1+ j) 1) "<"))
+       (setq depth (1+ depth) j (+ j 2)))
+      ((and (= c ">") (< j len) (= (substr s (1+ j) 1) "%"))
+       (setq depth (1- depth) j (+ j 2))
+       (if (<= depth 0) (setq closed T)))
+      ((= c ">") (setq j (1+ j)))
+      (T (setq j (1+ j)))
+    )
+  )
+  (if (not closed)
+    (progn
+      (setq st (OCS:addIssue st "UNTERMINATED_FIELD" i "字段 %<...>% 未闭合"))
+      (setq j (1+ len))
+    )
+  )
+  (list (1- j) j)  ; 返回 (字段结束位置(含) 下一扫描位置)
+)
+
+;; 读取字体描述至 ;（识别转义与嵌套花括号），返回 (描述 结束后位置 err)
+(defun OCS:readFontDesc (s i len / j c depth buf err)
+  (setq j i depth 0 buf "" err nil)
+  (while (and (<= j len) (not err))
+    (setq c (substr s j 1))
+    (cond
+      ((= c "\\")
+       (if (< j len)
+         (progn (setq buf (strcat buf c (substr s (1+ j) 1))) (setq j (+ j 2)))
+         (progn (setq err "字体描述以孤立反斜杠结尾") (setq j (1+ j)))
+       ))
+      ((= c "{") (setq depth (1+ depth) buf (strcat buf c) j (1+ j)))
+      ((= c "}")
+       (if (> depth 0)
+         (progn (setq depth (1- depth) buf (strcat buf c) j (1+ j)))
+         (progn (setq err "字体描述中出现多余的 }") (setq j (1+ j)))
+       ))
+      ((= c ";")
+       (if (= depth 0)
+         (setq j (1+ j))                       ; 结束
+         (progn (setq buf (strcat buf c) j (1+ j)))
+       ))
+      (T (setq buf (strcat buf c) j (1+ j)))
+    )
+  )
+  (if (and (not err) (> depth 0))
+    (setq err "字体描述中花括号未闭合")
+  )
+  (if (and (not err) (not (OCS:strEndsWithChar (OCS:chompDesc buf) ";")))
+    ;; 循环退出但没遇到 ';'：说明串已耗尽
+    (setq err "字体指令不完整（缺少分号）")
+  )
+  (list buf (1- j) err)
+)
+
+(defun OCS:chompDesc (s)
+  ;; 去掉尾部空白
+  (while (and (> (strlen s) 0)
+              (OCS:isSpaceChar (substr s (strlen s) 1)))
+    (setq s (substr s 1 (1- (strlen s))))
+  )
+  s
+)
+
+(defun OCS:isSpaceChar (c)
+  (or (= c " ") (= c "\t") (= c "\n") (= c "\r"))
+)
+
+(defun OCS:strEndsWithChar (s c)
+  (and (> (strlen s) 0) (= (substr s (strlen s) 1) c))
+)
+
+;; 分割字体描述参数 a|b|c  → ("a" "b" "c")
 (defun OCS:splitDesc (desc / out i pos start)
   (setq out nil i 1 start 1)
   (while (<= i (strlen desc))
@@ -123,118 +201,5 @@
                (OCS:equalsIgnoreCase fam "SimSun")))
       (OCS:equalsIgnoreCase fam "宋体"))
 )
-
-(defun OCS:equalsIgnoreCase (a b)
-  (= (OCS:lower a) (OCS:lower b))
-)
-
-(defun OCS:lower (s / out i ch up lo)
-  (setq up "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
-        lo "abcdefghijklmnopqrstuvwxyz"
-        out "" i 1)
-  (while (<= i (strlen s))
-    (setq ch (substr s i 1))
-    (setq p (vl-position ch (OCS:splitChars up)))
-    (if p
-      (setq out (strcat out (substr lo (1+ p) 1)))
-      (setq out (strcat out ch))
-    )
-    (setq i (1+ i))
-  )
-  out
-)
-
-;;; 主扫描器（纯函数）
-;;; 输入：
-;;;   s       ： 文字原始内容（MTEXT 全量原始串 / 属性内容等）
-;;;   target  ： (list (cons :family "SimSun") (cons :charSet 134)
-;;;                     (cons :pitchFamily 36) (cons :appendParams T))
-;;; 输出 plist：
-;;;   (:text 新内容 :changes 修改数 :issues ((code pos len msg)...) )
-;;; 规则（方案第 5 节）：
-;;;   - 仅替换有效 \f、\F 指令中的字体族；
-;;;   - %<...>% 字段整体保护（其中 \f 不是字体指令）；
-;;;   - 转义 \\ 与 \{ \} 不作为格式开关；
-;;;   - 保留其他一切格式码与原文字符；
-;;;   - 解析失败只记录问题，不删除任何段落。
-;;; =====================================================================
-(defun OCS:NormalizeFontRuns (s target / st len out i c r desc endp err fam newDesc next)
-  (if (not (stringp s))
-    (list "text" s "changes" 0 "issues" (list (list "BAD_INPUT" 0 0 "输入不是字符串")))
-    (progn
-      (setq len (strlen s))
-      (setq st  (list "i" 1 "issues" nil "changes" 0 "len" len))
-      (setq out "")
-      (setq i 1)
-      (while (<= i len)
-        (setq c (substr s i 1))
-        (cond
-          ;; 转义序列（\\、\{、\}、\; 等）：整体原样输出，不作为格式开关
-          ;; 注意顺序：先判断转义，再判断 \f/\F（\f 也是合法转义之一，
-          ;; 但作为格式指令时其后是描述文本，不会整体走转义分支）
-          ((and (= c "\\") (< i len) (OCS:isEscapable (substr s (1+ i) 1))
-                (not (and (or (= (substr s (1+ i) 1) "f")
-                              (= (substr s (1+ i) 1) "F"))
-                          (not (OCS:alphaChar (substr s (+ i 2) 1))))))
-           (setq out (strcat out c (substr s (1+ i) 1)))
-           (setq i (+ i 2))
-          )
-          ;; 字段范围保护：%< ... >% 整体原样输出
-          ((and (= c "%") (< i len) (= (substr s (1+ i) 1) "<"))
-           (setq next (OCS:scanFieldEnd s i len))
-           (setq st (OCS:scanFieldSt s i len st))
-           (setq out (strcat out (substr s i (1+ (- next i)))))
-           (setq i next)
-          )
-          ;; 字体切换指令 \f / \F（后随字符不能是字母，防止误匹配）
-          ((and (= c "\\") (< i len)
-                (or (= (substr s (1+ i) 1) "f") (= (substr s (1+ i) 1) "F"))
-                (not (OCS:alphaChar (substr s (+ i 2) 1))))
-           (setq r (OCS:readFontDesc s (+ i 2) len))
-           (setq desc (car r) endp (cadr r) err (caddr r))
-           (if err
-             (progn
-               (setq st (OCS:addIssue st "UNTERMINATED_FONT" i err))
-               ;; 保留原文，不删除任何段落（本指令按原样输出）
-               (setq out (strcat out c (substr s (1+ i) 1)))
-               (setq i (+ i 2))
-             )
-             (progn
-               (setq fam (car (OCS:splitDesc (OCS:chompDesc desc))))
-               (if (or (= fam "") (OCS:isTargetFamily fam target))
-                 (progn
-                   ;; 已是目标族：原样保留（幂等，不重复追加参数）
-                   (setq out (strcat out c (substr s (1+ i) 1) desc ";"))
-                   (setq i (1+ endp))
-                 )
-                 (progn
-                   (setq newDesc (OCS:rewriteDesc (OCS:chompDesc desc) target))
-                   (setq out (strcat out c (substr s (1+ i) 1) newDesc ";"))
-                   (setq st (OCS:bumpChanges st))
-                   (setq i (1+ endp))
-                 )
-               )
-             )
-           )
-          )
-          (T
-           (setq out (strcat out c))
-           (setq i (1+ i))
-          )
-        )
-      )
-      (list "text" out
-            "changes" (OCS:assocd "changes" st 0)
-            "issues" (OCS:assocd "issues" st nil))
-    )
-  )
-)
-
-;; 字体指令边界：\f 后随字符不能是字母（防止把 \fx 之类当字体指令）
-(defun OCS:alphaChar (ch)
-  (and (= (strlen ch) 1)
-       (or (and (>= ch "a") (<= ch "z"))
-           (and (>= ch "A") (<= ch "Z"))))
-)
-(princ "\nOK-PART3 lines 235-470")
+(princ "\nOK-PART3 lines 208-408")
 (princ)

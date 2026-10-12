@@ -19,6 +19,57 @@
 
 (vl-load-com)
 
+;;; =====================================================================
+;;; 引擎兼容垫片：适配天正/浩辰等精简 LISP 引擎缺失的标准函数
+;;; 已知缺失：consp、stringp、error；vlax-method-applicable-p 返 NIL
+;;; 但方法实际可用（如 GetBlocks 接口检查返 NIL 但直接调用 OK）
+;;; =====================================================================
+
+;; consp：(and (listp x) (not (atom x)))
+;;   原子（数/串/符号/T/nil）会被 atom 视为 T，正好让空表 () 通过，
+;;   标准 AutoLISP 里空表是 nil（atom=nil=()），consp 返 nil，
+;;   我们的实现 (and (listp nil) (not (atom nil))) = (and T (not T)) = nil，一致。
+(defun OCS:consp (x)
+  (and (listp x) (not (atom x)))
+)
+
+;; stringp：用 type 返回的符号判断。各引擎行为不一，先探测再缓存。
+;; 探测方法：(type "x") 的返回值比较。标准 AutoLISP 返回 SYM一笔 STR。
+;; 无 type 时回退到：不是数、不是符号、不是 nil、能 strlen 则当作字符串。
+(setq *OCS:StrType* nil)
+(if (not (boundp '*OCS:StrType*))
+  (setq *OCS:StrType* nil))
+;; 探测：求 (type "abc")，若返回符号 STR 则用 type 判别；否则用回退法。
+(if (not *OCS:StrType*)
+  (progn
+    (setq *OCS:StrType* (vl-catch-all-apply 'type (list "abc")))
+    (if (vl-catch-all-error-p *OCS:StrType*)
+      (setq *OCS:StrType* nil))
+  )
+)
+(defun OCS:stringp (x)
+  (if *OCS:StrType*
+    (equal (type x) *OCS:StrType*)
+    (and (not (numberp x))
+         (not (atom x))
+         (not (listp x))))
+)
+
+;; error：用 (exit) 硬退（引擎无 error 函数时）
+(defun OCS:fail (msg)
+  (princ (strcat "\nOCS 错误：" msg))
+  (exit)
+)
+
+;; vlax-method-applicable-p 在某些克隆引擎上返 NIL 但方法实际可用：
+;; OCS:methodOk 用试调一空参列表替代：能调通即认为可用。
+(defun OCS:methodOk (obj meth / r)
+  (setq r (vl-catch-all-apply meth (list obj)))
+  (not (vl-catch-all-error-p r))
+)
+;; 改写预检里的接口检查；it was: (if (not (vlax-method-applicable-p doc 'GetBlocks))
+;;   (setq res (OCS:addProblem res "error" "Blocks 集合接口不可用")))
+
 ;;; ------------------------- 全局状态 -------------------------
 (setq *OCS:Version*      "0.1.0")
 (setq *OCS:Plan*         nil)   ; 修改计划
@@ -136,7 +187,7 @@
 
 ;; 报错判断
 (defun OCS:errp (x)
-  (and (consp x) (equal (car x) "error"))
+  (and (OCS:consp x) (equal (car x) "error"))
 )
 
 ;; 错误信息取文本
@@ -391,7 +442,7 @@
 ;;;   - 解析失败只记录问题，不删除任何段落。
 ;;; =====================================================================
 (defun OCS:NormalizeFontRuns (s target / st len out i c r desc endp err fam newDesc next)
-  (if (not (stringp s))
+  (if (not (OCS:stringp s))
     (list "text" s "changes" 0 "issues" (list (list "BAD_INPUT" 0 0 "输入不是字符串")))
     (progn
       (setq len (strlen s))
@@ -596,7 +647,7 @@
   ;; 若键已存在则替换，否则追加（保证 plist 键唯一）
   (setq out nil done nil)
   (foreach pair res
-    (if (and (not done) (consp pair) (equal (car pair) key))
+    (if (and (not done) (OCS:consp pair) (equal (car pair) key))
       (progn (setq out (append out (list (cons key val)))) (setq done T))
       (setq out (append out (list pair)))
     )
@@ -626,7 +677,7 @@
 ;; 字体文件来源：优先写入可被目标 CAD 解析的标识（文件名），
 ;; 若名称解析失败回退到绝对路径（仅作为最后手段并在报告中记录）。
 (defun OCS:fontFileSource ( pair )
-  (if (consp pair) (cadr pair) pair)
+  (if (OCS:consp pair) (cadr pair) pair)
 )
 
 ;; 在临时样式上验证写入/读回
@@ -650,7 +701,7 @@
               (setq o (vlax-ename->vla-object ent))
               ;; FontFile 写入（先文件名）
               (setq f (OCS:getVal res "fontFile"))
-              (setq bf (if (consp f) (cadr f) f))
+              (setq bf (if (OCS:consp f) (cadr f) f))
               (setq r (vl-catch-all-apply 'vla-put-FontFile (list o bf)))
               (if (vl-catch-all-error-p r)
                 (progn
@@ -712,8 +763,8 @@
 (defun OCS:findError (res / found)
   (setq found nil)
   (foreach item res
-    (if (and (consp item) (equal (car item) "problem")
-             (consp (cdr item)) (equal (cadr item) "error"))
+    (if (and (OCS:consp item) (equal (car item) "problem")
+             (OCS:consp (cdr item)) (equal (cadr item) "error"))
       (setq found T)
     )
   )
@@ -848,7 +899,7 @@
   (if (not doc)
     (OCS:addProblem res "error" "ActiveX 文档不可用")
     (progn
-      (if (not (vlax-method-applicable-p doc 'GetBlocks))
+      (if (not (OCS:methodOk doc 'vla-get-Blocks))
         (setq res (OCS:addProblem res "error" "Blocks 集合接口不可用")))
       res
     )
@@ -1296,7 +1347,7 @@
 
 (defun OCS:styleTargetFontFile (doc / f)
   (setq f (OCS:getVal (OCS:getVal *OCS:Plan* "font") "fontFile"))
-  (if (consp f) (cadr f) f)
+  (if (OCS:consp f) (cadr f) f)
 )
 
 ;; 样式非字体参数快照（40/41/50/70/71 + 未知组码计数）
@@ -1322,7 +1373,7 @@
 (defun OCS:xdataKeys (e / keys)
   (setq keys nil)
   (foreach pair e
-    (if (and (consp pair) (numberp (car pair)) (>= (car pair) 1000))
+    (if (and (OCS:consp pair) (numberp (car pair)) (>= (car pair) 1000))
       (setq keys (cons (car pair) keys))
     )
   )
@@ -1817,7 +1868,7 @@
 
 (defun OCS:unlockTempLayers ( / item)
   (foreach item *OCS:TempState*
-    (if (and (consp item) (equal (car item) "layer"))
+    (if (and (OCS:consp item) (equal (car item) "layer"))
       (vl-catch-all-apply 'vla-put-Lock (list (OCS:assocd "obj" item nil) "vlax-false"))
     )
   )
@@ -1825,7 +1876,7 @@
 
 (defun OCS:restoreTempLayers ( / item)
   (foreach item *OCS:TempState*
-    (if (and (consp item) (equal (car item) "layer"))
+    (if (and (OCS:consp item) (equal (car item) "layer"))
       (vl-catch-all-apply 'vla-put-Lock (list (OCS:assocd "obj" item nil) "vlax-true"))
     )
   )
@@ -1876,7 +1927,7 @@
   (foreach pair pairs
     (setq updated nil out nil)
     (foreach item report
-      (if (and (consp item) (equal (car item) (car pair)) (not updated))
+      (if (and (OCS:consp item) (equal (car item) (car pair)) (not updated))
         (progn (setq out (append out (list pair))) (setq updated T))
         (setq out (append out (list item)))
       )
@@ -1890,15 +1941,15 @@
 (defun OCS:problemsOf (res / out)
   (setq out nil)
   (foreach item res
-    (if (and (consp item) (equal (car item) "problem")
-             (consp (cdr item)) (equal (cadr item) "error"))
+    (if (and (OCS:consp item) (equal (car item) "problem")
+             (OCS:consp (cdr item)) (equal (cadr item) "error"))
       (setq out (append out (list (caddr item))))
     )
   )
   ;; 字体解析中的问题
   (foreach item (OCS:getVal res "font" nil)
-    (if (and (consp item) (equal (car item) "problem")
-             (consp (cdr item)) (equal (cadr item) "error"))
+    (if (and (OCS:consp item) (equal (car item) "problem")
+             (OCS:consp (cdr item)) (equal (cadr item) "error"))
       (setq out (append out (list (caddr item))))
     )
   )
@@ -2012,7 +2063,7 @@
   (setq ok T)
   ;; 恢复临时解锁的图层（原锁定状态）
   (foreach item *OCS:TempState*
-    (if (and (consp item) (equal (car item) "layer"))
+    (if (and (OCS:consp item) (equal (car item) "layer"))
       (progn
         (setq lay (OCS:assocd "obj" item nil))
         (if lay
@@ -2078,7 +2129,7 @@
 
 (defun OCS:fmt (x / out)
   (cond
-    ((stringp x) x)
+    ((OCS:stringp x) x)
     ((numberp x) (rtos x 2 6))
     ((null x) "nil")
     ((listp x)
@@ -2398,7 +2449,7 @@
   (if (and *OCS:FaultPoint* (= *OCS:FaultPoint* point))
     (progn
       (setq *OCS:FaultPoint* nil)
-      (error (strcat "OCS 故障注入：" point))
+      (OCS:fail (strcat "OCS 故障注入：" point))
     )
   )
 )

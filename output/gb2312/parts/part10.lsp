@@ -1,29 +1,5 @@
-;;; part10 - 主源码第 1720-1869 行（顶层 form 118-130，共 151 个）
+;;; part10 - 主源码第 1797-1975 行（顶层 form 127-140，共 159 个）
 ;;; 由 tools/build_diag.py 生成；本部件可独立 LOAD，加载成功打印 OK-PART10
-(defun OCS:tableGetText (e row col content / r msg)
-  (setq r (vl-catch-all-apply 'vla-GetTextString (list e row col content)))
-  (cond
-    ((vl-catch-all-error-p r)
-     (setq msg (vl-catch-all-error-message r))
-     (cons "error"
-           (list "code" (if (or (OCS:strContains msg "8002000B")
-                               (OCS:strContains msg "0x8002000B")
-                               (OCS:strContains msg "超出")
-                               (OCS:strContains msg "index"))
-                           "OUT_OF_CONTENT" "READ_FAIL")
-                 "msg" msg)))
-    (T (list r))
-  )
-)
-
-(defun OCS:tableSetText (e row col content txt / r)
-  (setq r (vl-catch-all-apply 'vla-SetTextString (list e row col content txt)))
-  (if (vl-catch-all-error-p r)
-    (cons "error" (vl-catch-all-error-message r))
-    T
-  )
-)
-
 (defun OCS:containsField (s)
   (and (OCS:strContains s "%<") (OCS:strContains s ">%"))
 )
@@ -98,7 +74,7 @@
 
 (defun OCS:unlockTempLayers ( / item)
   (foreach item *OCS:TempState*
-    (if (and (consp item) (equal (car item) "layer"))
+    (if (and (OCS:consp item) (equal (car item) "layer"))
       (vl-catch-all-apply 'vla-put-Lock (list (OCS:assocd "obj" item nil) "vlax-false"))
     )
   )
@@ -106,7 +82,7 @@
 
 (defun OCS:restoreTempLayers ( / item)
   (foreach item *OCS:TempState*
-    (if (and (consp item) (equal (car item) "layer"))
+    (if (and (OCS:consp item) (equal (car item) "layer"))
       (vl-catch-all-apply 'vla-put-Lock (list (OCS:assocd "obj" item nil) "vlax-true"))
     )
   )
@@ -150,5 +126,58 @@
     (list (cons "errors" errs) (cons "errorDetail" detail))
   )
 )
-(princ "\nOK-PART10 lines 1720-1869")
+
+;; 用新值替换 plist 中已存在的键（不产生重复键）
+(defun OCS:reportSet (report pairs / out updated)
+  (setq out nil)
+  (foreach pair pairs
+    (setq updated nil out nil)
+    (foreach item report
+      (if (and (OCS:consp item) (equal (car item) (car pair)) (not updated))
+        (progn (setq out (append out (list pair))) (setq updated T))
+        (setq out (append out (list item)))
+      )
+    )
+    (if (not updated) (setq out (append out (list pair))))
+    (setq report out)
+  )
+  report
+)
+
+(defun OCS:problemsOf (res / out)
+  (setq out nil)
+  (foreach item res
+    (if (and (OCS:consp item) (equal (car item) "problem")
+             (OCS:consp (cdr item)) (equal (cadr item) "error"))
+      (setq out (append out (list (caddr item))))
+    )
+  )
+  ;; 字体解析中的问题
+  (foreach item (OCS:getVal res "font" nil)
+    (if (and (OCS:consp item) (equal (car item) "problem")
+             (OCS:consp (cdr item)) (equal (cadr item) "error"))
+      (setq out (append out (list (caddr item))))
+    )
+  )
+  out
+)
+
+;;; =====================================================================
+;;; 再生与读回 OCS:VerifyDrawing
+;;; =====================================================================
+
+(defun OCS:VerifyDrawing ( / doc r)
+  (setq doc (OCS:activeDoc))
+  (if (not doc)
+    (list "ok" nil "error" "无法获取活动文档")
+    (progn
+      (setq r (vl-catch-all-apply 'vla-Regen (list doc 1))) ; acAllViewports
+      (if (vl-catch-all-error-p r)
+        (list "ok" nil "error" (strcat "再生失败：" (vl-catch-all-error-message r)))
+        (OCS:readbackStyles)
+      )
+    )
+  )
+)
+(princ "\nOK-PART10 lines 1797-1975")
 (princ)

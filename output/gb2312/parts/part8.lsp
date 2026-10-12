@@ -1,4 +1,4 @@
-;;; part8 - 主源码第 1232-1463 行（顶层 form 92-104，共 151 个）
+;;; part8 - 主源码第 1285-1521 行（顶层 form 99-112，共 159 个）
 ;;; 由 tools/build_diag.py 生成；本部件可独立 LOAD，加载成功打印 OK-PART8
 (defun OCS:BuildPlan ( / plan styles hosts)
   (setq styles (OCS:CollectStyles))
@@ -65,7 +65,7 @@
 
 (defun OCS:styleTargetFontFile (doc / f)
   (setq f (OCS:getVal (OCS:getVal *OCS:Plan* "font") "fontFile"))
-  (if (consp f) (cadr f) f)
+  (if (OCS:consp f) (cadr f) f)
 )
 
 ;; 样式非字体参数快照（40/41/50/70/71 + 未知组码计数）
@@ -91,7 +91,7 @@
 (defun OCS:xdataKeys (e / keys)
   (setq keys nil)
   (foreach pair e
-    (if (and (consp pair) (numberp (car pair)) (>= (car pair) 1000))
+    (if (and (OCS:consp pair) (numberp (car pair)) (>= (car pair) 1000))
       (setq keys (cons (car pair) keys))
     )
   )
@@ -232,5 +232,10 @@
   (setq ann (OCS:leaderAnnotation e))
   (list "kind" "leader" "obj" e "annotation" ann)
 )
-(princ "\nOK-PART8 lines 1232-1463")
+
+(defun OCS:leaderAnnotation (e / r)
+  (setq r (OCS:safeProp e 'Annotation))
+  r
+)
+(princ "\nOK-PART8 lines 1285-1521")
 (princ)

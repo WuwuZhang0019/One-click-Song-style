@@ -1,5 +1,47 @@
-;;; part6 - 主源码第 907-1088 行（顶层 form 66-78，共 151 个）
+;;; part6 - 主源码第 918-1133 行（顶层 form 71-84，共 159 个）
 ;;; 由 tools/build_diag.py 生成；本部件可独立 LOAD，加载成功打印 OK-PART6
+(defun OCS:activeDoc* ()
+  (vla-get-ActiveDocument (vlax-get-acad-object))
+)
+
+;;; =====================================================================
+;;; 样式收集 OCS:CollectStyles
+;;; 方案第 3 节：DXF 70 位 1 = 形文件记录，位 16 = 外参依赖；
+;;; 不按名称含 "|" 判断；Standard 与注释性样式照常处理。
+;;; =====================================================================
+
+(defun OCS:CollectStyles ( / res ent lst e flg name)
+  (setq res (list "normal" nil "shape" nil "xref" nil "vertical" nil "count" 0))
+  (setq ent (tblnext "STYLE" T))
+  (while ent
+    (setq flg (OCS:assocd 70 ent 0)
+          name (OCS:assocd 2 ent ""))
+    (cond
+      ((/= 0 (logand flg 1))
+       ;; 形文件记录（LOAD 请求）→ 跳过并分类记录
+       (setq res (OCS:lstAppend res "shape" name))
+      )
+      ((/= 0 (logand flg 16))
+       ;; 外部参照依赖记录 → 跳过并分类记录
+       (setq res (OCS:lstAppend res "xref" name))
+      )
+      (T
+       (setq res (OCS:lstAppend res "normal"
+                  (list "name" name
+                        "flags" flg
+                        "vertical" (/= 0 (logand flg 4))
+                        "annotative" (OCS:isAnnotativeStyle ent)
+                        "bigFontBefore" (OCS:assocd 4 ent "")
+                        "fontFileBefore" (OCS:assocd 3 ent "")
+                        "dxf" ent)))
+      )
+    )
+    (setq ent (tblnext "STYLE" nil))
+  )
+  (setq res (OCS:putPair res "count" (length (OCS:getVal res "normal"))))
+  res
+)
+
 (defun OCS:lstAppend (res key val)
   (OCS:putPair res key (append (OCS:getVal res key nil) (list val)))
 )
@@ -174,13 +216,5 @@
     )
   )
 )
-
-(defun OCS:isUnknownClass (typ)
-  (or (OCS:strContains typ "Proxy")
-      (OCS:strContains typ "ACAD_PROXY")
-      (and (OCS:strContains typ "AcDb")
-           (not (OCS:knownClass typ)))
-  )
-)
-(princ "\nOK-PART6 lines 907-1088")
+(princ "\nOK-PART6 lines 918-1133")
 (princ)
