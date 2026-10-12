@@ -130,19 +130,9 @@
   (if p (cdr p) default)
 )
 
-;; 报错包装：调用 COM/DXF，出错时返回 (cons :error msg)
-(defun OCS:try (fn / r)
-  (setq r (vl-catch-all-apply fn nil))
-  (if (vl-catch-all-error-p r)
-    (cons :error (vl-catch-all-error-message r))
-    r
-  )
-)
-
-;; 展开为 (vl-catch-all-apply 'fn (list a b ...)) 的包装
-(defmacro OCS:try2 (fn &rest args)
-  `(vl-catch-all-apply ,fn (list ,@args))
-)
+;; 注意：不使用 defmacro / 反引号宏。部分 CAD 引擎不把 defmacro 当特殊形式，
+;; 加载时会把 (fn &rest args) 参数表当普通调用求值，报 "no function definition: FN"。
+;; 报错包装直接用 vl-catch-all-apply（见各调用点），此处只保留 errp/errmsg。
 
 ;; 报错判断
 (defun OCS:errp (x)
@@ -2424,8 +2414,11 @@
 )
 
 ;;; =====================================================================
-;;; 加载提示
+;;; 加载提示（防御式：版本号取不到时不触发 strcat 类型错误）
 ;;; =====================================================================
-(princ (strcat "\n一键统一宋体（YJST）v" *OCS:Version*
-               " 已加载。输入 YJST 执行。"))
+(if (and (boundp '*OCS:Version*) *OCS:Version*)
+  (princ (strcat "\n一键统一宋体（YJST）v" *OCS:Version*
+                 " 已加载。输入 YJST 执行。"))
+  (princ "\n一键统一宋体（YJST）已加载。输入 YJST 执行。")
+)
 (princ)
