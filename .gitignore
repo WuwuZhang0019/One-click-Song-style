@@ -2,3 +2,6 @@ tools/__pycache__/
 tests/native/scratch/
 *.pyc
 output/gb2312/*.tmp
+
+# 项目记忆（不提交）
+.workbuddy/

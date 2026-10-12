@@ -1,0 +1,20 @@
+;;; sub12/f02 - 主源码第 2265-2280 行（part12 第 2 个顶层 form）
+;;; 由 tools/build_diag.py 生成；加载成功打印 OK-F02
+(defun OCS:applyAllStyles ( / modified err)
+  (setq modified 0 err nil)
+  (foreach st (OCS:assocd :styles *OCS:Plan* nil)
+    (if (not err)
+      (progn
+        (OCS:TestFault "style-write")
+        (setq r (OCS:ApplyStyle (OCS:activeDoc) st))
+        (if (OCS:assocd :ok r nil)
+          (setq modified (1+ modified))
+          (setq err (OCS:assocd :error r "未知错误"))
+        )
+      )
+    )
+  )
+  (list :modified modified :error err)
+)
+(princ "\nOK-F02 lines 2265-2280")
+(princ)

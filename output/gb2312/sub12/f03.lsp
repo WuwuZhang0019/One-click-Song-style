@@ -1,0 +1,43 @@
+;;; sub12/f03 - 主源码第 2282-2320 行（part12 第 3 个顶层 form）
+;;; 由 tools/build_diag.py 生成；加载成功打印 OK-F03
+(defun OCS:applyAllHosts ( / changes tableContents err data new r)
+  (setq changes 0 tableContents 0 err nil)
+  (foreach host (OCS:assocd :hosts *OCS:Plan* nil)
+    (if (not err)
+      (progn
+        (setq data (OCS:ReadHost host))
+        (if (OCS:assocd :error data nil)
+          (setq err (strcat (OCS:assocd :handle host "?") ": " (OCS:assocd :error data "")))
+          (if (not (OCS:assocd :skip data nil))
+            (progn
+              (setq new (OCS:NormalizeFontRuns (OCS:assocd :text data "") (OCS:fontTarget)))
+              (if (OCS:assocd :issues new nil)
+                (setq err (strcat (OCS:assocd :handle host "?") ": 内容解析问题 "
+                                   (OCS:fmt (OCS:assocd :issues new nil))))
+              )
+              (if (and (not err) (> (OCS:assocd :changes new 0) 0))
+                (progn
+                  (OCS:TestFault "content-write")
+                  (setq data (OCS:putPair data :text (OCS:assocd :text new "")))
+                  (setq r (OCS:WriteHost host data))
+                  (if (OCS:assocd :ok r nil)
+                    (progn
+                      (setq changes (+ changes (OCS:assocd :changes new 0)))
+                      (if (eq (OCS:assocd :kind host) :table)
+                        (setq tableContents (+ tableContents (OCS:assocd :contents r 0)))
+                      )
+                    )
+                    (setq err (strcat (OCS:assocd :handle host "?") ": " (OCS:assocd :error r "")))
+                  )
+                )
+              )
+            )
+          )
+        )
+      )
+    )
+  )
+  (list :changes changes :tableContents tableContents :error err)
+)
+(princ "\nOK-F03 lines 2282-2320")
+(princ)
