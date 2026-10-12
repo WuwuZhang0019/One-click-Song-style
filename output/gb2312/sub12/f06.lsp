@@ -1,4 +1,4 @@
-;;; sub12/f06 - 主源码第 2361-2414 行（part12 第 6 个顶层 form）
+;;; sub12/f06 - 主源码第 2363-2416 行（part12 第 6 个顶层 form）
 ;;; 由 tools/build_diag.py 生成；加载成功打印 OK-F06
 (defun OCS:selfTestCases ( / long1 acc n)
   ;; 与 tests/font-format-cases.json 一一对应：
@@ -54,5 +54,5 @@
           "{\\fSimSun|b1|c134|pf22;i;前 %<\\\\AcVar \\f\\\\H;>后}" 1)
   )
 )
-(princ "\nOK-F06 lines 2361-2414")
+(princ "\nOK-F06 lines 2363-2416")
 (princ)

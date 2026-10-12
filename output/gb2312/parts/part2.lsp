@@ -65,7 +65,7 @@
 
 ;; 报错判断
 (defun OCS:errp (x)
-  (and (consp x) (eq (car x) :error))
+  (and (consp x) (equal (car x) "error"))
 )
 
 ;; 错误信息取文本

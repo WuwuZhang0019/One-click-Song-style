@@ -95,27 +95,27 @@
 ;; 目标字体参数（S01 结果通过 *OCS:FontTarget* 注入；缺省为已验证的
 ;; SimSun 规则：charset=134，pitch/family=36(0x24)=VARIABLE_PITCH|FF_ROMAN|TMPF_TRUETYPE）
 (defun OCS:targetCharSet (target)
-  (OCS:assocd :charSet target 134)
+  (OCS:assocd "charSet" target 134)
 )
 (defun OCS:targetPitchFamily (target)
-  (OCS:assocd :pitchFamily target 36)
+  (OCS:assocd "pitchFamily" target 36)
 )
 (defun OCS:targetAppendParams (target)
-  (OCS:assocd :appendParams target T)
+  (OCS:assocd "appendParams" target T)
 )
 
 ;; 追加解析问题
 (defun OCS:addIssue (st code pos msg)
-  (list :i   (OCS:assocd :i st 1)
-        :issues (append (OCS:assocd :issues st nil)
-                        (list (list code pos (OCS:assocd :len st 0) msg)))
-        :changes (OCS:assocd :changes st 0)
-        :len (OCS:assocd :len st 0))
+  (list "i"   (OCS:assocd "i" st 1)
+        "issues" (append (OCS:assocd "issues" st nil)
+                        (list (list code pos (OCS:assocd "len" st 0) msg)))
+        "changes" (OCS:assocd "changes" st 0)
+        "len" (OCS:assocd "len" st 0))
 )
 
 ;; 判断字体族是否已是目标族（不区分大小写；接受“宋体”）
 (defun OCS:isTargetFamily (fam target / tf)
-  (setq tf (OCS:assocd :family target "SimSun"))
+  (setq tf (OCS:assocd "family" target "SimSun"))
   (or (OCS:equalsIgnoreCase fam tf)
       (and (OCS:equalsIgnoreCase tf "SimSun")
            (or (OCS:equalsIgnoreCase fam "宋体")
@@ -160,10 +160,10 @@
 ;;; =====================================================================
 (defun OCS:NormalizeFontRuns (s target / st len out i c r desc endp err fam newDesc next)
   (if (not (stringp s))
-    (list :text s :changes 0 :issues (list (list "BAD_INPUT" 0 0 "输入不是字符串")))
+    (list "text" s "changes" 0 "issues" (list (list "BAD_INPUT" 0 0 "输入不是字符串")))
     (progn
       (setq len (strlen s))
-      (setq st  (list :i 1 :issues nil :changes 0 :len len))
+      (setq st  (list "i" 1 "issues" nil "changes" 0 "len" len))
       (setq out "")
       (setq i 1)
       (while (<= i len)
@@ -223,9 +223,9 @@
           )
         )
       )
-      (list :text out
-            :changes (OCS:assocd :changes st 0)
-            :issues (OCS:assocd :issues st nil))
+      (list "text" out
+            "changes" (OCS:assocd "changes" st 0)
+            "issues" (OCS:assocd "issues" st nil))
     )
   )
 )

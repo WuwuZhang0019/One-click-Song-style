@@ -5,12 +5,12 @@
   (foreach c cases
     (progn
       (setq in  (car c) want (cadr c) wantN (caddr c))
-      (setq r (OCS:NormalizeFontRuns in (list (cons :family "SimSun")
-                                               (cons :charSet 134)
-                                               (cons :pitchFamily 36)
-                                               (cons :appendParams T))))
-      (setq out (OCS:assocd :text r ""))
-      (setq n  (OCS:assocd :changes r 0))
+      (setq r (OCS:NormalizeFontRuns in (list (cons "family" "SimSun")
+                                               (cons "charSet" 134)
+                                               (cons "pitchFamily" 36)
+                                               (cons "appendParams" T))))
+      (setq out (OCS:assocd "text" r ""))
+      (setq n  (OCS:assocd "changes" r 0))
       (if (and (= out want) (= n wantN))
         (setq pass (1+ pass))
         (progn

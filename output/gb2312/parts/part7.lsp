@@ -8,19 +8,19 @@
 (defun OCS:mapClass (typ / t)
   (setq t (OCS:lower typ))
   (cond
-    ((or (= t "acad_text")   (= t "acdbtext"))          :text)
-    ((or (= t "acad_mtext")  (= t "acdbmtext"))         :mtext)
-    ((or (= t "acad_attribute") (= t "acdbattribute"))  :attrib)
-    ((or (= t "acad_attributereference") (= t "acdbattributereference")) :attrib)
-    ((or (= t "acad_attributedefinition") (= t "acdbattributedefinition")) :attdef)
-    ((OCS:strContains t "dimension")                    :dim)
-    ((OCS:strContains t "mleader")                      :mleader)
-    ((OCS:strContains t "leader")                       :leader)
-    ((OCS:strContains t "table")                        :table)
-    ((OCS:strContains t "tolerance")                    :tolerance)
-    ((or (= t "acad_blockreference") (= t "acdbblockreference")) :blockref)
-    ((OCS:strContains t "wblock")                       :blockref)
-    (T :other)
+    ((or (= t "acad_text")   (= t "acdbtext"))          "text")
+    ((or (= t "acad_mtext")  (= t "acdbmtext"))         "mtext")
+    ((or (= t "acad_attribute") (= t "acdbattribute"))  "attrib")
+    ((or (= t "acad_attributereference") (= t "acdbattributereference")) "attrib")
+    ((or (= t "acad_attributedefinition") (= t "acdbattributedefinition")) "attdef")
+    ((OCS:strContains t "dimension")                    "dim")
+    ((OCS:strContains t "mleader")                      "mleader")
+    ((OCS:strContains t "leader")                       "leader")
+    ((OCS:strContains t "table")                        "table")
+    ((OCS:strContains t "tolerance")                    "tolerance")
+    ((or (= t "acad_blockreference") (= t "acdbblockreference")) "blockref")
+    ((OCS:strContains t "wblock")                       "blockref")
+    (T "other")
   )
 )
 
@@ -29,51 +29,51 @@
 ;;; ---------------------------------------------------------------------
 
 (defun OCS:collectTextHost (res doc e ctx handle typ / s r)
-  (setq res (OCS:putPair res :entities (1+ (OCS:getVal res :entities 0))))
-  (setq res (OCS:lstAppend res :hosts
-              (list :kind (if (= (OCS:lower typ) "acdbmtext") :mtext :text)
-                    :obj e :handle handle :ctx ctx :type typ)))
+  (setq res (OCS:putPair res "entities" (1+ (OCS:getVal res "entities" 0))))
+  (setq res (OCS:lstAppend res "hosts"
+              (list "kind" (if (= (OCS:lower typ) "acdbmtext") "mtext" "text")
+                    "obj" e "handle" handle "ctx" ctx "type" typ)))
   res
 )
 
 (defun OCS:collectAttrib (res doc e ctx handle typ / isAttdef)
-  (setq res (OCS:putPair res :attribs (1+ (OCS:getVal res :attribs 0))))
-  (setq res (OCS:lstAppend res :hosts
-              (list :kind (if (OCS:strContains (OCS:lower typ) "definition") :attdef :attrib)
-                    :obj e :handle handle :ctx ctx :type typ)))
+  (setq res (OCS:putPair res "attribs" (1+ (OCS:getVal res "attribs" 0))))
+  (setq res (OCS:lstAppend res "hosts"
+              (list "kind" (if (OCS:strContains (OCS:lower typ) "definition") "attdef" "attrib")
+                    "obj" e "handle" handle "ctx" ctx "type" typ)))
   res
 )
 
 (defun OCS:collectDim (res doc e ctx handle typ)
-  (OCS:lstAppend res :hosts
-    (list :kind :dim :obj e :handle handle :ctx ctx :type typ))
+  (OCS:lstAppend res "hosts"
+    (list "kind" "dim" "obj" e "handle" handle "ctx" ctx "type" typ))
 )
 
 (defun OCS:collectMLeader (res doc e ctx handle typ)
-  (OCS:lstAppend res :hosts
-    (list :kind :mleader :obj e :handle handle :ctx ctx :type typ))
+  (OCS:lstAppend res "hosts"
+    (list "kind" "mleader" "obj" e "handle" handle "ctx" ctx "type" typ))
 )
 
 (defun OCS:collectLeader (res doc e ctx handle typ)
-  (OCS:lstAppend res :hosts
-    (list :kind :leader :obj e :handle handle :ctx ctx :type typ))
+  (OCS:lstAppend res "hosts"
+    (list "kind" "leader" "obj" e "handle" handle "ctx" ctx "type" typ))
 )
 
 (defun OCS:collectTable (res doc e ctx handle typ)
-  (OCS:lstAppend res :hosts
-    (list :kind :table :obj e :handle handle :ctx ctx :type typ))
+  (OCS:lstAppend res "hosts"
+    (list "kind" "table" "obj" e "handle" handle "ctx" ctx "type" typ))
 )
 
 (defun OCS:collectTolerance (res doc e ctx handle typ)
-  (OCS:lstAppend res :hosts
-    (list :kind :tolerance :obj e :handle handle :ctx ctx :type typ))
+  (OCS:lstAppend res "hosts"
+    (list "kind" "tolerance" "obj" e "handle" handle "ctx" ctx "type" typ))
 )
 
 ;; 块引用：额外处理属性实例（GetAttributes / GetConstantAttributes）
 (defun OCS:collectBlockRef (res doc e ctx handle typ / attrs consts)
-  (setq res (OCS:putPair res :entities (1+ (OCS:getVal res :entities 0))))
-  (setq res (OCS:lstAppend res :hosts
-              (list :kind :blockref :obj e :handle handle :ctx ctx :type typ)))
+  (setq res (OCS:putPair res "entities" (1+ (OCS:getVal res "entities" 0))))
+  (setq res (OCS:lstAppend res "hosts"
+              (list "kind" "blockref" "obj" e "handle" handle "ctx" ctx "type" typ)))
   ;; 属性实例
   (setq attrs (vl-catch-all-apply 'vla-GetAttributes (list e)))
   (if (and (not (vl-catch-all-error-p attrs)) attrs)
@@ -106,11 +106,11 @@
 )
 
 (defun OCS:safeMethod (obj meth args / r)
-  (if (null obj) (cons :error "nil object")
+  (if (null obj) (cons "error" "nil object")
     (progn
       (setq r (vl-catch-all-apply (read (strcat "vla-" (vl-symbol-name meth))) (cons obj args)))
       (if (vl-catch-all-error-p r)
-        (cons :error (vl-catch-all-error-message r))
+        (cons "error" (vl-catch-all-error-message r))
         r
       )
     )

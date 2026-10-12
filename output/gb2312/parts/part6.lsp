@@ -11,7 +11,7 @@
   (setq o (vlax-ename->vla-object ent))
   (setq r (vl-catch-all-apply 'vla-get-Annotative (list o)))
   (if (vl-catch-all-error-p r) nil
-    (equal r :vlax-true)
+    (equal r "vlax-true")
   )
 )
 
@@ -23,12 +23,12 @@
 ;;; =====================================================================
 
 (defun OCS:CollectHosts ( / res doc blocks i blk)
-  (setq res (list :blocks 0 :xrefBlocks 0 :displayBlocks 0
-                  :entities 0 :attribs 0 :unknown 0
-                  :blockList nil :skipped nil))
+  (setq res (list "blocks" 0 "xrefBlocks" 0 "displayBlocks" 0
+                  "entities" 0 "attribs" 0 "unknown" 0
+                  "blockList" nil "skipped" nil))
   (setq doc (OCS:activeDoc))
   (if (not doc)
-    (OCS:addProblem res :error "无法获取活动文档")
+    (OCS:addProblem res "error" "无法获取活动文档")
     (progn
       (setq blocks (vla-get-Blocks doc))
       (setq i 1)
@@ -60,18 +60,18 @@
       (setq btype (OCS:classifyBlockName name))
       (cond
         ;; 外部参照块：停止进入，不跨外部数据库
-        ((equal isXref :vlax-true)
-         (setq res (OCS:putPair res :xrefBlocks (1+ (OCS:getVal res :xrefBlocks 0))))
-         (setq res (OCS:lstAppend res :skipped (list "XREF_BLOCK" handle name)))
+        ((equal isXref "vlax-true")
+         (setq res (OCS:putPair res "xrefBlocks" (1+ (OCS:getVal res "xrefBlocks" 0))))
+         (setq res (OCS:lstAppend res "skipped" (list "XREF_BLOCK" handle name)))
         )
-        ((eq btype :display-cache)
+        ((equal btype "display-cache")
          ;; 标注/表格等的显示缓存：交由其源宿主处理，不直接改写
-         (setq res (OCS:putPair res :displayBlocks (1+ (OCS:getVal res :displayBlocks 0))))
-         (setq res (OCS:lstAppend res :skipped (list "DISPLAY_CACHE" handle name)))
+         (setq res (OCS:putPair res "displayBlocks" (1+ (OCS:getVal res "displayBlocks" 0))))
+         (setq res (OCS:lstAppend res "skipped" (list "DISPLAY_CACHE" handle name)))
         )
         (T
-         (setq res (OCS:putPair res :blocks (1+ (OCS:getVal res :blocks 0))))
-         (setq res (OCS:lstAppend res :blockList (list :name name :handle handle :obj blk)))
+         (setq res (OCS:putPair res "blocks" (1+ (OCS:getVal res "blocks" 0))))
+         (setq res (OCS:lstAppend res "blockList" (list "name" name "handle" handle "obj" blk)))
          ;; 扫描块内实体
          (setq res (OCS:scanBlockContents res doc blk name handle))
         )
@@ -86,10 +86,10 @@
   (setq n (OCS:lower name))
   (cond
     ;; 动态块的匿名表示：*D12 这类
-    ((and (>= (strlen n) 2) (= (substr n 1 2) "*d")) :dynamic-repr)
+    ((and (>= (strlen n) 2) (= (substr n 1 2) "*d")) "dynamic-repr")
     ;; 标注/表格等显示缓存：*U12、*X12 这类（U=匿名块，X=…）
-    ((and (>= (strlen n) 2) (= (substr n 1 2) "*u")) :display-cache)
-    (T :named)
+    ((and (>= (strlen n) 2) (= (substr n 1 2) "*u")) "display-cache")
+    (T "named")
   )
 )
 
@@ -98,7 +98,7 @@
   (setq i 1)
   (while (<= i (vla-get-Count ents))
     (setq e (OCS:safeItem ents i))
-    (if e (setq res (OCS:visitEntity res doc e (list :block bname bhandle))))
+    (if e (setq res (OCS:visitEntity res doc e (list "block" bname bhandle))))
     (setq i (1+ i))
   )
   res
@@ -109,8 +109,8 @@
   (setq typ (OCS:safeProp e 'ObjectName))
   (if (not typ)
     (progn
-      (setq res (OCS:putPair res :unknown (1+ (OCS:getVal res :unknown 0))))
-      (setq res (OCS:lstAppend res :skipped (list "UNKNOWN_OBJECT" "?" (OCS:ctxStr ctx))))
+      (setq res (OCS:putPair res "unknown" (1+ (OCS:getVal res "unknown" 0))))
+      (setq res (OCS:lstAppend res "skipped" (list "UNKNOWN_OBJECT" "?" (OCS:ctxStr ctx))))
     )
     (progn
       (setq handle (OCS:safeProp e 'Handle))
@@ -128,7 +128,7 @@
 
 (defun OCS:ctxStr (ctx)
   (if (null ctx) "-"
-    (if (= (car ctx) :block)
+    (if (= (car ctx) "block")
       (strcat "块:" (cadr ctx))
       (strcat "空间:" (cadr ctx))
     )
@@ -137,11 +137,11 @@
 
 ;; 记录处理
 (defun OCS:seenP (res h)
-  (and h (vl-position h (OCS:getVal res :seen nil)))
+  (and h (vl-position h (OCS:getVal res "seen" nil)))
 )
 (defun OCS:markSeen (res h)
   (if h
-    (OCS:putPair res :seen (append (OCS:getVal res :seen nil) (list h)))
+    (OCS:putPair res "seen" (append (OCS:getVal res "seen" nil) (list h)))
     res
   )
 )
@@ -150,23 +150,23 @@
 (defun OCS:handleEntity (res doc e typ ctx handle / cls)
   (setq cls (OCS:mapClass typ))
   (cond
-    ((eq cls :text)     (OCS:collectTextHost res doc e ctx handle typ))
-    ((eq cls :mtext)    (OCS:collectTextHost res doc e ctx handle typ))
-    ((eq cls :attrib)   (OCS:collectAttrib res doc e ctx handle typ))
-    ((eq cls :attdef)   (OCS:collectAttrib res doc e ctx handle typ))
-    ((eq cls :dim)      (OCS:collectDim res doc e ctx handle typ))
-    ((eq cls :mleader)  (OCS:collectMLeader res doc e ctx handle typ))
-    ((eq cls :leader)   (OCS:collectLeader res doc e ctx handle typ))
-    ((eq cls :table)    (OCS:collectTable res doc e ctx handle typ))
-    ((eq cls :tolerance)(OCS:collectTolerance res doc e ctx handle typ))
-    ((eq cls :blockref) (OCS:collectBlockRef res doc e ctx handle typ))
-    ((eq cls :attribute-dest) res) ; 由 blockref 处理
+    ((equal cls "text")     (OCS:collectTextHost res doc e ctx handle typ))
+    ((equal cls "mtext")    (OCS:collectTextHost res doc e ctx handle typ))
+    ((equal cls "attrib")   (OCS:collectAttrib res doc e ctx handle typ))
+    ((equal cls "attdef")   (OCS:collectAttrib res doc e ctx handle typ))
+    ((equal cls "dim")      (OCS:collectDim res doc e ctx handle typ))
+    ((equal cls "mleader")  (OCS:collectMLeader res doc e ctx handle typ))
+    ((equal cls "leader")   (OCS:collectLeader res doc e ctx handle typ))
+    ((equal cls "table")    (OCS:collectTable res doc e ctx handle typ))
+    ((equal cls "tolerance")(OCS:collectTolerance res doc e ctx handle typ))
+    ((equal cls "blockref") (OCS:collectBlockRef res doc e ctx handle typ))
+    ((equal cls "attribute-dest") res) ; 由 blockref 处理
     (T
      ;; 专业/代理对象：记录为未覆盖
      (if (OCS:isUnknownClass typ)
        (progn
-         (setq res (OCS:putPair res :unknown (1+ (OCS:getVal res :unknown 0))))
-         (setq res (OCS:lstAppend res :skipped
+         (setq res (OCS:putPair res "unknown" (1+ (OCS:getVal res "unknown" 0))))
+         (setq res (OCS:lstAppend res "skipped"
                       (list "PROXY_OR_PRO" handle (strcat typ "@" (OCS:ctxStr ctx)))))
        )
      )

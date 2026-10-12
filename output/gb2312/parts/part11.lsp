@@ -5,7 +5,7 @@
   (foreach pair pairs
     (setq updated nil out nil)
     (foreach item report
-      (if (and (consp item) (eq (car item) (car pair)) (not updated))
+      (if (and (consp item) (equal (car item) (car pair)) (not updated))
         (progn (setq out (append out (list pair))) (setq updated T))
         (setq out (append out (list item)))
       )
@@ -19,15 +19,15 @@
 (defun OCS:problemsOf (res / out)
   (setq out nil)
   (foreach item res
-    (if (and (consp item) (eq (car item) :problem)
-             (consp (cdr item)) (eq (cadr item) :error))
+    (if (and (consp item) (equal (car item) "problem")
+             (consp (cdr item)) (equal (cadr item) "error"))
       (setq out (append out (list (caddr item))))
     )
   )
   ;; 字体解析中的问题
-  (foreach item (OCS:getVal res :font nil)
-    (if (and (consp item) (eq (car item) :problem)
-             (consp (cdr item)) (eq (cadr item) :error))
+  (foreach item (OCS:getVal res "font" nil)
+    (if (and (consp item) (equal (car item) "problem")
+             (consp (cdr item)) (equal (cadr item) "error"))
       (setq out (append out (list (caddr item))))
     )
   )
@@ -41,11 +41,11 @@
 (defun OCS:VerifyDrawing ( / doc r)
   (setq doc (OCS:activeDoc))
   (if (not doc)
-    (list :ok nil :error "无法获取活动文档")
+    (list "ok" nil "error" "无法获取活动文档")
     (progn
       (setq r (vl-catch-all-apply 'vla-Regen (list doc 1))) ; acAllViewports
       (if (vl-catch-all-error-p r)
-        (list :ok nil :error (strcat "再生失败：" (vl-catch-all-error-message r)))
+        (list "ok" nil "error" (strcat "再生失败：" (vl-catch-all-error-message r)))
         (OCS:readbackStyles)
       )
     )
@@ -55,8 +55,8 @@
 ;; 样式读回：字体族为宋体、大字体为空、原参数一致
 (defun OCS:readbackStyles ( / ok details st ent e)
   (setq ok T details nil)
-  (foreach st (OCS:assocd :styles *OCS:Plan* nil)
-    (setq ent (tblobjname "STYLE" (OCS:assocd :name st "")))
+  (foreach st (OCS:assocd "styles" *OCS:Plan* nil)
+    (setq ent (tblobjname "STYLE" (OCS:assocd "name" st "")))
     (if ent
       (progn
         (setq e (entget ent))
@@ -64,8 +64,8 @@
           (progn (setq ok nil)
                  (setq details (append details
                    (list (list "BIGFONT_NOT_EMPTY" (OCS:assocd 2 e "")))))))
-        (if (OCS:assocd :before st nil)
-          (if (not (OCS:styleReadbackOk (OCS:assocd :before st nil)
+        (if (OCS:assocd "before" st nil)
+          (if (not (OCS:styleReadbackOk (OCS:assocd "before" st nil)
                                          (OCS:styleSnapshot ent)))
             (progn (setq ok nil)
                    (setq details (append details
@@ -74,10 +74,10 @@
       )
       (progn (setq ok nil)
              (setq details (append details
-               (list (list "STYLE_MISSING" (OCS:assocd :name st ""))))))
+               (list (list "STYLE_MISSING" (OCS:assocd "name" st ""))))))
     )
   )
-  (list :ok ok :details details)
+  (list "ok" ok "details" details)
 )
 
 ;;; =====================================================================
@@ -109,14 +109,14 @@
 ;; 回滚后读回：本次计划中的样式不得残留空大字体之外的转换痕迹
 (defun OCS:rollbackReadbackOk ( / ok st ent e)
   (setq ok T)
-  (foreach st (OCS:assocd :styles *OCS:Plan* nil)
-    (setq ent (tblobjname "STYLE" (OCS:assocd :name st "")))
+  (foreach st (OCS:assocd "styles" *OCS:Plan* nil)
+    (setq ent (tblobjname "STYLE" (OCS:assocd "name" st "")))
     (if ent
       (progn
         (setq e (entget ent))
         ;; 若转换前该样式有大字体，回滚后应恢复
-        (if (OCS:assocd :bigFontBefore st nil)
-          (if (/= (OCS:assocd 4 e "") (OCS:assocd :bigFontBefore st ""))
+        (if (OCS:assocd "bigFontBefore" st nil)
+          (if (/= (OCS:assocd 4 e "") (OCS:assocd "bigFontBefore" st ""))
             (setq ok nil)
           )
         )
@@ -141,12 +141,12 @@
   (setq ok T)
   ;; 恢复临时解锁的图层（原锁定状态）
   (foreach item *OCS:TempState*
-    (if (and (consp item) (eq (car item) :layer))
+    (if (and (consp item) (equal (car item) "layer"))
       (progn
-        (setq lay (OCS:assocd :obj item nil))
+        (setq lay (OCS:assocd "obj" item nil))
         (if lay
           (progn
-            (setq r (vl-catch-all-apply 'vla-put-Lock (list lay :vlax-true)))
+            (setq r (vl-catch-all-apply 'vla-put-Lock (list lay "vlax-true")))
             (if (vl-catch-all-error-p r) (setq ok nil))
           )
         )
@@ -168,35 +168,35 @@
   ;; 中文命令行摘要
   (princ "\n")
   (princ (strcat "\n==== 一键统一宋体（YJST）===="))
-  (princ (strcat "\n状态：" (OCS:assocd :status report "?")))
-  (princ (strcat "\n图纸：" (OCS:assocd :dwg report "?")))
-  (princ (strcat "\nCAD 版本：" (OCS:assocd :cadver report "?")))
-  (princ (strcat "\n目标字体族：" (OCS:assocd :family report "SimSun")))
-  (princ (strcat "\n扫描文字样式：" (itoa (OCS:assocd :stylesScanned report 0))
-                 "　修改：" (itoa (OCS:assocd :stylesModified report 0))
-                 "　外参依赖跳过：" (itoa (OCS:assocd :stylesXref report 0))
-                 "　形文件跳过：" (itoa (OCS:assocd :stylesShape report 0))))
-  (princ (strcat "\n扫描文字宿主：" (itoa (OCS:assocd :hostsScanned report 0))
-                 "　修改字体段：" (itoa (OCS:assocd :fontRunsChanged report 0))
-                 "　属性实例：" (itoa (OCS:assocd :attribs report 0))
-                 "　表格内容项：" (itoa (OCS:assocd :tableContents report 0))))
-  (princ (strcat "\n扫描块定义：" (itoa (OCS:assocd :blocks report 0))
-                 "　外参块跳过：" (itoa (OCS:assocd :xrefBlocks report 0))
-                 "　匿名显示块：" (itoa (OCS:assocd :displayBlocks report 0))))
-  (princ (strcat "\n专业对象未覆盖：" (itoa (OCS:assocd :uncovered report 0))
-                 "　错误：" (itoa (OCS:assocd :errors report 0))
-                 "　恢复失败：" (itoa (OCS:assocd :recoverFailed report 0))))
-  (if (OCS:assocd :errorDetail report nil)
+  (princ (strcat "\n状态：" (OCS:assocd "status" report "?")))
+  (princ (strcat "\n图纸：" (OCS:assocd "dwg" report "?")))
+  (princ (strcat "\nCAD 版本：" (OCS:assocd "cadver" report "?")))
+  (princ (strcat "\n目标字体族：" (OCS:assocd "family" report "SimSun")))
+  (princ (strcat "\n扫描文字样式：" (itoa (OCS:assocd "stylesScanned" report 0))
+                 "　修改：" (itoa (OCS:assocd "stylesModified" report 0))
+                 "　外参依赖跳过：" (itoa (OCS:assocd "stylesXref" report 0))
+                 "　形文件跳过：" (itoa (OCS:assocd "stylesShape" report 0))))
+  (princ (strcat "\n扫描文字宿主：" (itoa (OCS:assocd "hostsScanned" report 0))
+                 "　修改字体段：" (itoa (OCS:assocd "fontRunsChanged" report 0))
+                 "　属性实例：" (itoa (OCS:assocd "attribs" report 0))
+                 "　表格内容项：" (itoa (OCS:assocd "tableContents" report 0))))
+  (princ (strcat "\n扫描块定义：" (itoa (OCS:assocd "blocks" report 0))
+                 "　外参块跳过：" (itoa (OCS:assocd "xrefBlocks" report 0))
+                 "　匿名显示块：" (itoa (OCS:assocd "displayBlocks" report 0))))
+  (princ (strcat "\n专业对象未覆盖：" (itoa (OCS:assocd "uncovered" report 0))
+                 "　错误：" (itoa (OCS:assocd "errors" report 0))
+                 "　恢复失败：" (itoa (OCS:assocd "recoverFailed" report 0))))
+  (if (OCS:assocd "errorDetail" report nil)
     (progn
       (princ "\n错误明细：")
-      (foreach d (OCS:assocd :errorDetail report nil)
+      (foreach d (OCS:assocd "errorDetail" report nil)
         (princ (strcat "\n  " (OCS:fmt d))))
     )
   )
-  (if (OCS:assocd :uncoveredDetail report nil)
+  (if (OCS:assocd "uncoveredDetail" report nil)
     (progn
       (princ "\n未覆盖明细（句柄/位置）：")
-      (foreach d (OCS:assocd :uncoveredDetail report nil)
+      (foreach d (OCS:assocd "uncoveredDetail" report nil)
         (princ (strcat "\n  " (OCS:fmt d))))
     )
   )
@@ -251,7 +251,7 @@
                      (list (vl-catch-all-error-message pre))))
      (OCS:Report report)
     )
-    ((not (OCS:getVal pre :ok nil))
+    ((not (OCS:getVal pre "ok" nil))
      (setq report (OCS:makeReport "预检失败"))
      (setq report (OCS:appendErrors report (OCS:problemsOf pre)))
      (OCS:Report report)
@@ -268,7 +268,7 @@
          (OCS:Report report)
        )
        (progn
-         (setq *OCS:Plan* (OCS:putPair plan :font (OCS:getVal pre :font)))
+         (setq *OCS:Plan* (OCS:putPair plan "font" (OCS:getVal pre "font")))
          ;; ---- 3) 开始 Undo 分组 ----
          (setq okUndo (OCS:beginUndoGroup))
          (if (not okUndo)
@@ -287,10 +287,10 @@
                  ;; Esc 或未预期错误：恢复临时状态并回滚本次分组
                  (OCS:restoreTempState)
                  (if (not (OCS:Rollback))
-                   (setq report (OCS:reportSet report (list (cons :recoverFailed 1))))
+                   (setq report (OCS:reportSet report (list (cons "recoverFailed" 1))))
                  )
                  ;; appendErrors 会把 :status 覆盖？不会：它只改 :errors/:errorDetail
-                 (setq report (OCS:reportSet report (list (cons :status "失败已回滚"))))
+                 (setq report (OCS:reportSet report (list (cons "status" "失败已回滚"))))
                )
              )
              (OCS:Report report)

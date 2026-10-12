@@ -47,10 +47,10 @@
 )
 
 (defun OCS:bumpChanges (st)
-  (list :i (OCS:assocd :i st 1)
-        :issues (OCS:assocd :issues st nil)
-        :changes (1+ (OCS:assocd :changes st 0))
-        :len (OCS:assocd :len st 0))
+  (list "i" (OCS:assocd "i" st 1)
+        "issues" (OCS:assocd "issues" st nil)
+        "changes" (1+ (OCS:assocd "changes" st 0))
+        "len" (OCS:assocd "len" st 0))
 )
 
 ;; 重写字体描述：替换族名，保留 b/i，按目标覆盖/追加 c、pf
@@ -61,7 +61,7 @@
       ((= p "") nil)
       (first
         (setq fam p)
-        (setq out (list (OCS:assocd :family target "SimSun")))
+        (setq out (list (OCS:assocd "family" target "SimSun")))
         (setq first nil)
       )
       ((and (= (substr p 1 1) "b") (OCS:allDigits (substr p 2 100)))
@@ -98,18 +98,18 @@
 ;; 3) 清空大字体并读回确认；
 ;; 4) 任一失败 → 在业务写入之前退出。
 (defun OCS:ResolveSongFont ( / f res )
-  (setq res (list :ok nil :family "SimSun" :charSet 134 :pitchFamily 36
-                  :fontFile nil :fontFileSource nil :bigFontEmpty nil
-                  :problems nil :appendParams T))
+  (setq res (list "ok" nil "family" "SimSun" "charSet" 134 "pitchFamily" 36
+                  "fontFile" nil "fontFileSource" nil "bigFontEmpty" nil
+                  "problems" nil "appendParams" T))
   ;; 候选字体文件（顺序即优先级；不接受 NSimSun/SimHei/STSong 顶替）
-  (setq res (OCS:addProblem res :info "候选字体文件扫描"))
+  (setq res (OCS:addProblem res "info" "候选字体文件扫描"))
   (setq f (OCS:findSimSunFile))
   (if (not f)
-    (setq res (OCS:addProblem res :error
+    (setq res (OCS:addProblem res "error"
       "未找到 SimSun 字体文件（simsun.ttc / simsun.ttf / SIMSUN.TTF），不能用其他字体替代"))
     (progn
-      (setq res (OCS:putPair res :fontFile f))
-      (setq res (OCS:putPair res :fontFileSource (OCS:fontFileSource f)))
+      (setq res (OCS:putPair res "fontFile" f))
+      (setq res (OCS:putPair res "fontFileSource" (OCS:fontFileSource f)))
     )
   )
   ;; 试验样式写入验证
@@ -118,13 +118,13 @@
 )
 
 (defun OCS:addProblem (res level msg)
-  (append res (list (list :problem level msg)))
+  (append res (list (list "problem" level msg)))
 )
 (defun OCS:putPair (res key val / out done)
   ;; 若键已存在则替换，否则追加（保证 plist 键唯一）
   (setq out nil done nil)
   (foreach pair res
-    (if (and (not done) (consp pair) (eq (car pair) key))
+    (if (and (not done) (consp pair) (equal (car pair) key))
       (progn (setq out (append out (list (cons key val)))) (setq done T))
       (setq out (append out (list pair)))
     )
@@ -161,23 +161,23 @@
 (defun OCS:verifyFontWrite (res / doc name ent o r f bf old1071)
   (setq doc (OCS:activeDoc))
   (if (not doc)
-    (setq res (OCS:addProblem res :error "无法获取活动文档（ActiveX 不可用）"))
+    (setq res (OCS:addProblem res "error" "无法获取活动文档（ActiveX 不可用）"))
     (progn
       (setq name (OCS:tempStyleName))
       (OCS:deleteStyleIfExists name)
       (setq r (vl-catch-all-apply 'vla-AddTextStyle
-                (list doc name (OCS:styleBaseFont) :vlax-true)))
+                (list doc name (OCS:styleBaseFont) "vlax-true")))
       (if (vl-catch-all-error-p r)
-        (setq res (OCS:addProblem res :error
+        (setq res (OCS:addProblem res "error"
                     (strcat "创建试验文字样式失败：" (vl-catch-all-error-message r))))
         (progn
           (setq ent (tblobjname "STYLE" name))
           (if (not ent)
-            (setq res (OCS:addProblem res :error "试验文字样式创建后未找到 STYLE 记录"))
+            (setq res (OCS:addProblem res "error" "试验文字样式创建后未找到 STYLE 记录"))
             (progn
               (setq o (vlax-ename->vla-object ent))
               ;; FontFile 写入（先文件名）
-              (setq f (OCS:getVal res :fontFile))
+              (setq f (OCS:getVal res "fontFile"))
               (setq bf (if (consp f) (cadr f) f))
               (setq r (vl-catch-all-apply 'vla-put-FontFile (list o bf)))
               (if (vl-catch-all-error-p r)
@@ -185,10 +185,10 @@
                   ;; 名称失败 → 绝对路径
                   (setq r (vl-catch-all-apply 'vla-put-FontFile (list o (car f))))
                   (if (vl-catch-all-error-p r)
-                    (setq res (OCS:addProblem res :error
+                    (setq res (OCS:addProblem res "error"
                       (strcat "FontFile 写入失败：" (vl-catch-all-error-message r))))
                     (progn
-                      (setq res (OCS:putPair res :fontFileSource (strcat (car f) " (绝对路径回退)")))
+                      (setq res (OCS:putPair res "fontFileSource" (strcat (car f) " (绝对路径回退)")))
                     ))
                 )
               )
@@ -196,11 +196,11 @@
               (if (not (OCS:hasError res))
                 (progn
                   (setq r (vl-catch-all-apply 'vla-SetFont
-                    (list o "SimSun" :vlax-false :vlax-false
-                          (OCS:getVal res :charSet)
-                          (OCS:getVal res :pitchFamily))))
+                    (list o "SimSun" "vlax-false" "vlax-false"
+                          (OCS:getVal res "charSet")
+                          (OCS:getVal res "pitchFamily"))))
                   (if (vl-catch-all-error-p r)
-                    (setq res (OCS:addProblem res :error
+                    (setq res (OCS:addProblem res "error"
                       (strcat "SetFont(SimSun) 失败：" (vl-catch-all-error-message r))))
                   )
                 )
@@ -210,8 +210,8 @@
                 (progn
                   (setq r (vl-catch-all-apply 'vla-get-FontFile (list o)))
                   (if (or (vl-catch-all-error-p r) (= r ""))
-                    (setq res (OCS:addProblem res :error "FontFile 读回为空，字体未被 CAD 解析"))
-                    (setq res (OCS:putPair res :fontFileReadback r))
+                    (setq res (OCS:addProblem res "error" "FontFile 读回为空，字体未被 CAD 解析"))
+                    (setq res (OCS:putPair res "fontFileReadback" r))
                   )
                 )
               )
@@ -220,7 +220,7 @@
                 (setq res (OCS:verifyBigFontClear res ent name))
               )
               ;; 记录写入顺序证据
-              (setq res (OCS:putPair res :writeOrder "FontFile → SetFont → 大字体清空(组码4) → 读回"))
+              (setq res (OCS:putPair res "writeOrder" "FontFile → SetFont → 大字体清空(组码4) → 读回"))
               ;; 删除试验样式
               (OCS:deleteStyleIfExists name)
             )
@@ -233,7 +233,7 @@
 )
 
 (defun OCS:hasError (res / p)
-  (setq p (assoc :problem res))
+  (setq p (assoc "problem" res))
   ;; 扫描列表中是否有 :error
   (OCS:findError res)
 )
