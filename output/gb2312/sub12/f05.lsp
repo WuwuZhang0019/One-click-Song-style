@@ -1,4 +1,4 @@
-;;; sub12/f05 - 主源码第 2337-2359 行（part12 第 5 个顶层 form）
+;;; sub12/f05 - 主源码第 2337-2361 行（part12 第 5 个顶层 form）
 ;;; 由 tools/build_diag.py 生成；加载成功打印 OK-F05
 (defun OCS:SelfTest ( / cases pass fail)
   (setq cases (OCS:selfTestCases) pass 0 fail 0)
@@ -21,7 +21,9 @@
     )
   )
   (princ (strcat "\nOCS:SelfTest 通过 " (itoa pass) " / 失败 " (itoa fail)))
-  (setq fail)
+  ;; 注意：结尾不能写 (setq fail)：目标引擎读入器不接受单参数 setq（实测语法错误），
+  ;; 裸符号作为最后表达式返回值，语义相同。
+  fail
 )
-(princ "\nOK-F05 lines 2337-2359")
+(princ "\nOK-F05 lines 2337-2361")
 (princ)

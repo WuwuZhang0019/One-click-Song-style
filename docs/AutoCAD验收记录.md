@@ -95,8 +95,8 @@
 | --- | --- |
 | UTF-8 开发源码 | `one-click-simsun.lsp`（无 BOM，严格 UTF-8 解码通过） |
 | 不可编码字符清理 | 源码中 8 处 `U+2014` 破折号改为 GB2312 可表示写法；`find_non_gb2312.py` 报 0 |
-| 交付文件 | `output/gb2312/one-click-simsun.lsp`，严格 GB2312、无 BOM、81903 字节 |
-| SHA-256 | `83a294dc23d95c7ac811f2401dfd5e48f26f3fb49f216d688c0b065d6014f005`（2026-10-12T22:19:28+08:00 重建；此前一版 `2d4ff7c9…eeefc` 因加载错误修复被替换） |
+| 交付文件 | `output/gb2312/one-click-simsun.lsp`，严格 GB2312、无 BOM、82025 字节 |
+| SHA-256 | `ceb6c348acc71cdc765c8b34379d6313d16da8f26429d0a4f7224f47a19c4e57`（2026-10-12T23:59:41+08:00 重建；修复 2358 行 `(setq fail)` 单参数 setq——目标引擎读入器拒收、实测语法错误，改为裸 `fail` 返回；此前一版 `83a294dc…4f005` 因此问题加载失败被替换） |
 | 构建工具样例检查 | `tools/test_build_gb2312.py` 5 项 PASS（中文转换、BOM 去除、行列报错且不覆盖旧交付、非法 UTF-8、源缺失） |
 | 静态检查 | `check_lisp.py` PASS（151 form / 139 函数 / 15 用例） |
 | 目标 CAD 加载 GB2312 文件 | 曾报 `no function definition: FN`，已定位修复（见 GB2312 说明第 9 节：`defmacro` 死代码被旧引擎当调用求值，已删除；加载提示防御化）；**修复后复测未验证** |

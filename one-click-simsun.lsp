@@ -2355,7 +2355,9 @@
     )
   )
   (princ (strcat "\nOCS:SelfTest 通过 " (itoa pass) " / 失败 " (itoa fail)))
-  (setq fail)
+  ;; 注意：结尾不能写 (setq fail)：目标引擎读入器不接受单参数 setq（实测语法错误），
+  ;; 裸符号作为最后表达式返回值，语义相同。
+  fail
 )
 
 (defun OCS:selfTestCases ( / long1 acc n)

@@ -1,4 +1,4 @@
-;;; part12 - 主源码第 2188-2424 行（顶层 form 144-151，共 151 个）
+;;; part12 - 主源码第 2188-2426 行（顶层 form 144-151，共 151 个）
 ;;; 由 tools/build_diag.py 生成；本部件可独立 LOAD，加载成功打印 OK-PART12
 (defun OCS:executeWrites ( / report stylesRes hostsRes verifyRes wrote)
   (setq report (OCS:makeReport nil))
@@ -170,7 +170,9 @@
     )
   )
   (princ (strcat "\nOCS:SelfTest 通过 " (itoa pass) " / 失败 " (itoa fail)))
-  (setq fail)
+  ;; 注意：结尾不能写 (setq fail)：目标引擎读入器不接受单参数 setq（实测语法错误），
+  ;; 裸符号作为最后表达式返回值，语义相同。
+  fail
 )
 
 (defun OCS:selfTestCases ( / long1 acc n)
@@ -237,5 +239,5 @@
   (princ "\n一键统一宋体（YJST）已加载。输入 YJST 执行。")
 )
 (princ)
-(princ "\nOK-PART12 lines 2188-2424")
+(princ "\nOK-PART12 lines 2188-2426")
 (princ)
