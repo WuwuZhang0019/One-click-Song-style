@@ -8,9 +8,9 @@
 
 ## 1 实现范围与使用方式
 
-首版使用 AutoLISP 与 Visual LISP/ActiveX，交付一个可用 `APPLOAD` 加载的 `one-click-simsun.lsp`。加载后执行 `YJST`，程序自动检查字体、处理当前图纸、再生并输出结果，不要求逐个选中文字，不增加逐项确认窗口。
+首版使用 AutoLISP 与 Visual LISP/ActiveX；仓库根目录的 `one-click-simsun.lsp` 是 UTF-8 开发源码。用户明确当前目标 CAD 环境需要 GB2312，因此实际加载前须按 [GB2312 编码修复与加载复测说明](GB2312编码修复与加载复测说明.md) 生成并校验独立的 `output/gb2312/one-click-simsun.lsp`，然后用 `APPLOAD` 加载该交付文件。加载后执行 `YJST`，程序自动检查字体、处理当前图纸、再生并输出结果，不要求逐个选中文字，不增加逐项确认窗口。
 
-`YJST` 是本方案确定的待实现命令，目前尚未提供可运行的插件文件。具体支持的 AutoCAD 版本以阶段 S01 的验证结果为准，不提前承诺版本范围。
+`YJST` 命令和根目录开发源码已提交。具体支持的 AutoCAD 版本、GB2312 交付文件的加载结果及原生图纸行为，仍以阶段 S01 与 S06 的实测记录为准，不提前承诺版本范围。
 
 ### 纳入处理的内容
 
@@ -215,13 +215,14 @@
 
 ## 9 工程文件与编码
 
-以下文件随对应阶段建立，当前仅落盘本实施方案。
+主要工程文件如下；阶段检查和实测进度见 README 与 `docs/AutoCAD验收记录.md`。
 
 ```text
 One-click Song style/
-  one-click-simsun.lsp                     APPLOAD 入口及首版功能
+  one-click-simsun.lsp                     UTF-8 开发源码
   docs/
     AutoLISP一键统一宋体实施方案.md        本方案
+    GB2312编码修复与加载复测说明.md       GB2312 交付及复测要求
     AutoCAD验收记录.md                    版本 环境 检查结果与实际证据
   tests/
     font-format-cases.json                字体格式与字段解析样例

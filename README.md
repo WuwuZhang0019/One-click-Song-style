@@ -6,7 +6,7 @@
 
 ## 使用步骤
 
-1. 在 AutoCAD 中运行 `APPLOAD`，选择 `one-click-simsun.lsp` 并加载（提示 `一键统一宋体（YJST）v0.1.0 已加载`）。
+1. 根目录 `one-click-simsun.lsp` 是 UTF-8 开发源码。当前目标 CAD 要求 GB2312；按 [编码修复说明](docs/GB2312编码修复与加载复测说明.md) 生成并验证 `output/gb2312/one-click-simsun.lsp` 后，运行 `APPLOAD` 加载该交付文件（提示 `一键统一宋体（YJST）v0.1.0 已加载`）。
 2. 命令行输入 `YJST` 回车。
 3. 程序自动完成：环境与字体预检 → 扫描并生成修改计划 → Undo 分组 → 写入样式与内容 → 恢复临时状态 → 再生 → 读回检查 → 输出中文摘要。
 4. 查看命令行摘要；结构化结果保存在 `*OCS:LastReport*`（Visual LISP 控制台或 `(princ *OCS:LastReport*)` 可读）。
@@ -32,9 +32,11 @@
 ## 文件
 
 ```
-one-click-simsun.lsp              APPLOAD 入口（唯一需要加载的文件）
+one-click-simsun.lsp              UTF-8 开发源码
+output/gb2312/one-click-simsun.lsp GB2312 CAD 加载交付文件
 docs/
   AutoLISP一键统一宋体实施方案.md   实施方案（实现与验收依据）
+  GB2312编码修复与加载复测说明.md  编码转换、加载指引与复测清单
   AutoCAD验收记录.md               环境、证据、未验证项
 tests/
   font-format-cases.json          扫描器 15 个样例（C01–C15）
