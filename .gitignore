@@ -1,3 +1,4 @@
-﻿tools/__pycache__/
+tools/__pycache__/
 tests/native/scratch/
 *.pyc
+output/gb2312/*.tmp

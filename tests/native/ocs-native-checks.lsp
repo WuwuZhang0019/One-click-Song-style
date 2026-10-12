@@ -542,7 +542,8 @@
   (OCS:log "--- T17 特殊符号与私用区字符 ---")
   (setq ms (vla-get-ModelSpace (vla-get-ActiveDocument (vlax-get-acad-object))))
   (setq e (vla-AddMText ms (vlax-3d-point (list 600.0 40.0 0.0)) 300.0
-                        "%%c12 %%d30 %%p0.5 U+E000 私用区  结束"))
+                        (strcat "%%c12 %%d30 %%p0.5 U+E000 私用区 "
+                                (chr 57344) " 结束")))
   (setq raw (OCS:getRaw e))
   (c:YJST)
   (setq after (OCS:getRaw e))

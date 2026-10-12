@@ -1,10 +1,10 @@
 ;;; =====================================================================
 ;;; one-click-simsun.lsp
-;;; 一键统一宋体（YJST）—— 当前图纸文字字体统一为宋体（SimSun）
+;;; 一键统一宋体（YJST）：将当前图纸文字字体统一为宋体（SimSun）
 ;;;
 ;;; 日期：2026-10-12
 ;;; 状态：实现完成，待原生 AutoCAD 验收（见 docs/AutoCAD验收记录.md）
-;;; 编码：UTF-8（无 BOM）
+;;; 编码：开发源码 UTF-8（无 BOM）；CAD 加载请使用 output/gb2312/ 交付文件
 ;;;
 ;;; 依据：docs/AutoLISP一键统一宋体实施方案.md
 ;;; 命令：APPLOAD 加载本文件后执行 YJST
@@ -388,8 +388,8 @@
 
 ;;; 主扫描器（纯函数）
 ;;; 输入：
-;;;   s       —— 文字原始内容（MTEXT 全量原始串 / 属性内容等）
-;;;   target  —— (list (cons :family "SimSun") (cons :charSet 134)
+;;;   s       ： 文字原始内容（MTEXT 全量原始串 / 属性内容等）
+;;;   target  ： (list (cons :family "SimSun") (cons :charSet 134)
 ;;;                     (cons :pitchFamily 36) (cons :appendParams T))
 ;;; 输出 plist：
 ;;;   (:text 新内容 :changes 修改数 :issues ((code pos len msg)...) )
@@ -2100,7 +2100,7 @@
 )
 
 ;;; =====================================================================
-;;; 用户命令 c:YJST —— 方案第 8 节流程
+;;; 用户命令 c:YJST：方案第 8 节流程
 ;;; =====================================================================
 
 (defun c:YJST ( / )

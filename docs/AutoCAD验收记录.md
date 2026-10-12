@@ -87,9 +87,29 @@
 
 ---
 
-## 4 下一步（在可用 AutoCAD 中）
+## 4 GB2312 交付构建记录（2026-10-12）
 
-1. `APPLOAD` 加载 `one-click-simsun.lsp`，命令行执行 `OCS_ENV` 记录版本与字体参数（对应本表第 1 节，确认 1071/charset/pf 与实现一致）。
+按 `docs/GB2312编码修复与加载复测说明.md` 落实编码交付：
+
+| 项 | 结果 |
+| --- | --- |
+| UTF-8 开发源码 | `one-click-simsun.lsp`（无 BOM，严格 UTF-8 解码通过） |
+| 不可编码字符清理 | 源码中 8 处 `U+2014` 破折号改为 GB2312 可表示写法；`find_non_gb2312.py` 报 0 |
+| 交付文件 | `output/gb2312/one-click-simsun.lsp`，严格 GB2312、无 BOM、81850 字节 |
+| SHA-256 | `2d4ff7c9cce0eff2090a6d7fd38986538037820a3c31cbd726beba076c0eeefc` |
+| 构建时间 | 2026-10-12T22:03:17+08:00（`tools/build_gb2312.py`，含往返与读回校验） |
+| 构建工具样例检查 | `tools/test_build_gb2312.py` 5 项 PASS（中文转换、BOM 去除、行列报错且不覆盖旧交付、非法 UTF-8、源缺失） |
+| 静态检查 | `check_lisp.py` PASS（153 form / 140 函数 / 15 用例） |
+| 目标 CAD 加载 GB2312 文件 | **未验证**（本机 core console 崩溃，见第 2 节） |
+| YJST 功能复测（GB2312 版） | **未验证** |
+
+复测请加载 `output/gb2312/one-click-simsun.lsp` 并核对上表 SHA-256；不要加载仓库根目录的 UTF-8 源文件。
+
+---
+
+## 5 下一步（在可用 AutoCAD 中）
+
+1. `APPLOAD` 加载 **`output/gb2312/one-click-simsun.lsp`**（核对 SHA-256 与构建时间），命令行执行 `OCS_ENV` 记录版本与字体参数（对应本表第 1 节，确认 1071/charset/pf 与实现一致）。
 2. 执行 `OCS_SCANNER`（纯函数 15 用例）与 `OCS_T01`…`OCS_T23`，把输出日志（`C:\Temp\ocs\ocs-*.log`）回填本记录。
-3. 特别确认：大字体组码 4 清空与 COM 读回、表格内容项越界错误文本、MTEXT 长文本往返、一次 `U`、Esc、二次零修改、保存重开与 PDF。
+3. 特别确认：中文长文本在多字节字符串下的 `strlen`/`substr` 行为、大字体组码 4 清空与 COM 读回、表格内容项越界错误文本、MTEXT 长文本往返、一次 `U`、Esc、二次零修改、保存重开与 PDF。
 4. 全部回填后，将本文件状态改为「原生验收通过」并更新方案第 10 节阶段进度。

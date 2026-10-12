@@ -32,17 +32,20 @@
 ## 文件
 
 ```
-one-click-simsun.lsp              UTF-8 开发源码
-output/gb2312/one-click-simsun.lsp GB2312 CAD 加载交付文件
+one-click-simsun.lsp              UTF-8 开发源码（不要直接加载到 CAD）
+output/gb2312/one-click-simsun.lsp GB2312 CAD 加载交付文件（APPLOAD 只加载它）
 docs/
   AutoLISP一键统一宋体实施方案.md   实施方案（实现与验收依据）
   GB2312编码修复与加载复测说明.md  编码转换、加载指引与复测清单
-  AutoCAD验收记录.md               环境、证据、未验证项
+  AutoCAD验收记录.md               环境、证据、未验证项、GB2312 构建记录
 tests/
   font-format-cases.json          扫描器 15 个样例（C01–C15）
   native/ocs-native-checks.lsp    原生检查与故障注入入口（OCS_T01…OCS_T23、OCS_ENV、OCS_SCANNER）
   native/probe1.lsp probe2.lsp    S01 环境探针（开发用）
 tools/
+  build_gb2312.py                 UTF-8 → GB2312 严格构建与校验
+  test_build_gb2312.py            构建工具 5 项样例检查
+  find_non_gb2312.py              列出无法 GB2312 表示的字符
   check_lisp.py                   静态结构与样例一致性检查
   font_params.py                  SimSun 1071/字符集/pitch-family 计算
 ```
@@ -50,11 +53,14 @@ tools/
 ## 自检与检查
 
 ```powershell
-python tools\check_lisp.py        # 结构、必需函数、禁止行为、样例一致性
-python tools\font_params.py       # 1071 打包值
+python -X utf8 tools\build_gb2312.py     # 构建 GB2312 交付文件（含严格校验与 SHA-256）
+python -X utf8 tools\test_build_gb2312.py # 构建工具 5 项样例检查
+python -X utf8 tools\find_non_gb2312.py   # 列出源码中无法 GB2312 表示的字符
+python tools\check_lisp.py                # 结构、必需函数、禁止行为、样例一致性
+python tools\font_params.py               # 1071 打包值
 ```
 
-AutoCAD 内（加载主文件后）：
+AutoCAD 内（加载交付文件后）：
 
 - `OCS_SCANNER` —— 纯函数扫描器 15 用例自检
 - `OCS_ENV` —— 记录版本与字体参数
@@ -62,4 +68,4 @@ AutoCAD 内（加载主文件后）：
 
 ## 已知未验证项
 
-见 [docs/AutoCAD验收记录.md](docs/AutoCAD验收记录.md) 第 2.3 节：本机 AutoCAD core console 启动即崩溃（2022 `AcPal.dll` 0xC0000005 / 2020 ErrorStatus=53），原生场景 T01–T23 与保存重开、打印显示等需在可用的 AutoCAD 环境中执行后回填。
+见 [docs/AutoCAD验收记录.md](docs/AutoCAD验收记录.md) 第 2.3 与第 4 节：本机 AutoCAD core console 启动即崩溃（2022 `AcPal.dll` 0xC0000005 / 2020 ErrorStatus=53），GB2312 交付文件的目标 CAD 加载与 `YJST` 功能复测、原生场景 T01–T23、保存重开、打印显示等需在可用的 AutoCAD 环境中执行后回填。
