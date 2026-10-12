@@ -234,7 +234,13 @@ One-click Song style/
 
 首版尽量合并为一个 `.lsp` 文件，内部使用 `OCS:` 函数前缀，保持加载步骤简单。测试和检查工具属于开发文件，不要求用户加载它们才能使用 `YJST`。
 
-源码、文档和测试数据使用 UTF-8，文档包含写入时的日期、状态和目标。若需要支持旧 AutoLISP 引擎，S01 应验证 UTF-8 源码加载、中文字符串及长文本解析；不能未经验证就更改编码或修改用户的 `LISPSYS`。AutoCAD 2021 对 AutoLISP Unicode 与文件编码接口有更新，相关行为应按实际版本确认。[AutoLISP open 编码说明](https://help.autodesk.com/cloudhelp/2027/ESP/AutoCAD-AutoLISP-Reference/files/GUID-089A323F-21FF-4337-99A9-375758E23BA4.htm)
+源码、文档和测试数据使用 UTF-8，文档包含写入时的日期、状态和目标。
+
+**2026-10-12 补充：用户明确当前目标 CAD 的加载文件需要 GB2312。** 因此保留 UTF-8 开发源码，另生成 `output/gb2312/one-click-simsun.lsp` 作为本环境的交付文件；用户通过 `APPLOAD` 或 `LOAD` 加载这一交付文件。不得仅复制、改扩展名或修改编辑器的显示编码，也不直接加载仓库根目录的 UTF-8 源文件。
+
+构建必须采用严格的 UTF-8 解码、GB2312 编码与读回校验，禁止忽略或替换不可编码字符；交付文件不带 BOM，GB2312 解码结果须与源码文本一致。后续若增加启动器、辅助 `.lsp` 或 `.dcl`，所有实际加载文件都纳入转换及校验。每次源码修改后重新构建，避免复测仍使用旧交付文件。
+
+具体转换步骤、可执行脚本和本次截图的加载复测要求见 [GB2312 编码修复与加载复测说明](GB2312编码修复与加载复测说明.md)。S01 仍需记录实际 CAD 版本及引擎，并验证交付文件中的中文字符串和长文本处理。程序不自动修改用户的 `LISPSYS`。AutoCAD 2021 对 AutoLISP Unicode 与文件编码接口有更新，相关行为应按实际版本确认。[AutoLISP open 编码说明](https://help.autodesk.com/cloudhelp/2027/ESP/AutoCAD-AutoLISP-Reference/files/GUID-089A323F-21FF-4337-99A9-375758E23BA4.htm)
 
 ## 10 分阶段实施与完成条件
 
@@ -243,6 +249,7 @@ One-click Song style/
 ### S01 验证目标 CAD 与关键接口
 
 - 记录目标 AutoCAD 版本、平台、AutoLISP 引擎、宋体字体族及文件解析结果。
+- 生成并严格校验 GB2312 交付文件，在目标 CAD 中确认实际加载路径、中文提示和 `YJST` 命令注册；不以 UTF-8 源文件替代本环境交付文件。
 - 验证普通 SHX、SHX 加 Bigfont、原有 TrueType、粗体斜体、竖排和注释性样式转换。
 - 确认字体文件与字体族的写入顺序、大字体清空及读回方式。
 - 对长多行文字、含字段文字、多行属性、表格普通内容和多内容项做原始内容往返试验。
