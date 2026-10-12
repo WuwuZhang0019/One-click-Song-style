@@ -697,15 +697,28 @@
 )
 
 ;; 在临时样式上验证写入/读回
-(defun OCS:verifyFontWrite (res / doc name ent o r f bf old1071)
+(defun OCS:verifyFontWrite (res / doc name ent o r f bf old1071 newent)
   (setq doc (OCS:activeDoc))
   (if (not doc)
     (setq res (OCS:addProblem res "error" "无法获取活动文档（ActiveX 不可用）"))
     (progn
       (setq name (OCS:tempStyleName))
       (OCS:deleteStyleIfExists name)
-      (setq r (vl-catch-all-apply 'vla-AddTextStyle
-                (list doc name (OCS:styleBaseFont) "vlax-true")))
+      ;; 用 entmake 创建试验文字样式（vla-AddTextStyle 在目标引擎不可用，实测函数错误）
+      (setq newent (list
+        (cons 0 "STYLE")
+        (cons 100 "AcDbSymbolTableRecord")
+        (cons 100 "AcDbTextStyleTableRecord")
+        (cons 2 name)
+        (cons 70 0)
+        (cons 40 0.0)
+        (cons 41 1.0)
+        (cons 50 0.0)
+        (cons 71 0)
+        (cons 42 0.2)
+        (cons 3 (OCS:styleBaseFont))
+        (cons 4 "")))
+      (setq r (vl-catch-all-apply 'entmake (list newent)))
       (if (vl-catch-all-error-p r)
         (setq res (OCS:addProblem res "error"
                     (strcat "创建试验文字样式失败：" (vl-catch-all-error-message r))))
