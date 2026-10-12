@@ -96,11 +96,12 @@
 | UTF-8 开发源码 | `one-click-simsun.lsp`（无 BOM，严格 UTF-8 解码通过） |
 | 不可编码字符清理 | 源码中 8 处 `U+2014` 破折号改为 GB2312 可表示写法；`find_non_gb2312.py` 报 0 |
 | 交付文件 | `output/gb2312/one-click-simsun.lsp`，严格 GB2312、无 BOM |
-| SHA-256 | `4f924cadcf60adfb670c965bd4bd22b2195b7a99316a6b53701c350a4ba8729d`（2026-10-13T01:16:00+08:00 重建；新增引擎兼容垫片 OCS:consp/OCS:stringp/OCS:fail/OCS:methodOk，替换 16 处 consp、2 处 stringp、1 处 error、1 处 vlax-method-applicable-p；只读检查降级为 warn；此前一版 `05aba96e…756a` 因缺 consp 致预检恒失败被替换） |
+| SHA-256 | `cfa0e77a38737642a5a10d4403fea49264dd55488301a97975335f0f5c7d591f`（2026-10-13T01:50:08+08:00 重建；修复扁平 plist 取值失败——全项目 plist 为扁平 (K V K V ...)，但 getVal/assocd 用 assoc 对裸字符串取 car 报错/误匹配，导致 YJST 报告恒为「预检失败 errors:0」+ 关联列表错误。改 getVal/assocd/putPair/reportSet 为逐元素扫描实现，不依赖 assoc；删除 hasError 中无用的 assoc 调用。Python 模拟验证：预检通过 → getVal "ok"=T，加 error problem → nil） |
 | 构建工具样例检查 | `tools/test_build_gb2312.py` 5 项 PASS（中文转换、BOM 去除、行列报错且不覆盖旧交付、非法 UTF-8、源缺失） |
-| 静态检查 | `check_lisp.py` PASS（152 form / 144 函数 / 15 用例） |
-| 目标 CAD 加载 GB2312 文件 | 曾报 `no function definition: FN`，已定位修复（见 GB2312 说明第 9 节：`defmacro` 死代码被旧引擎当调用求值，已删除；加载提示防御化）；**修复后复测未验证** |
-| YJST 功能复测（GB2312 版） | **未验证** |
+| 静态检查 | `check_lisp.py` PASS（159 form / 144 函数 / 15 用例） |
+| 目标 CAD 引擎 | 23.1s (LMS Tech)，疑似天正/浩辰内核 |
+| 引擎函数探针 | 102 项 PASS 99 项；缺 consp/stringp/error，已垫片 |
+| YJST 预检复测 | **待复测**——扁平 plist 修法后，应进入扫描阶段 |
 
 复测请加载 `output/gb2312/one-click-simsun.lsp` 并核对上表 SHA-256；不要加载仓库根目录的 UTF-8 源文件。
 

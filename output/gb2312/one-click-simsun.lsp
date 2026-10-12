@@ -176,9 +176,14 @@
 )
 
 ;; 关联列表取值（无则默认）
-(defun OCS:assocd (key lst default / p)
-  (setq p (assoc key lst))
-  (if p (cdr p) default)
+(defun OCS:assocd (key lst default / i n)
+  ;; 扁平 plist (K V K V ...) 取值：逐元素找等于 key 的位置，返回其后一个。
+  ;; 同 putPair，遇到 list 元素（如 problem 三元组）原样跳过，不影响步进。
+  (setq i 0 n (length lst))
+  (while (and (< i n) (not (equal (nth i lst) key)))
+    (setq i (1+ i))
+  )
+  (if (and (< i n) (< (1+ i) n)) (nth (1+ i) lst) default)
 )
 
 ;; 注意：不使用 defmacro / 反引号宏。部分 CAD 引擎不把 defmacro 当特殊形式，
@@ -621,6 +626,7 @@
 ;; 3) 清空大字体并读回确认；
 ;; 4) 任一失败 → 在业务写入之前退出。
 (defun OCS:ResolveSongFont ( / f res )
+  ;; 扁平 plist（与 makeReport 一致）
   (setq res (list "ok" nil "family" "SimSun" "charSet" 134 "pitchFamily" 36
                   "fontFile" nil "fontFileSource" nil "bigFontEmpty" nil
                   "problems" nil "appendParams" T))
@@ -643,21 +649,31 @@
 (defun OCS:addProblem (res level msg)
   (append res (list (list "problem" level msg)))
 )
-(defun OCS:putPair (res key val / out done)
-  ;; 若键已存在则替换，否则追加（保证 plist 键唯一）
-  (setq out nil done nil)
-  (foreach pair res
-    (if (and (not done) (OCS:consp pair) (equal (car pair) key))
-      (progn (setq out (append out (list (cons key val)))) (setq done T))
-      (setq out (append out (list pair)))
+(defun OCS:putPair (res key val / out done i n item)
+  ;; 扁平 plist 设值：逐元素找等于 key 的位置，替换其后一个元素；
+  ;; 中途遇到 list 元素（如 problem 三元组）原样保留，不打乱 plist 步进。
+  (setq out nil done nil i 0 n (length res))
+  (while (< i n)
+    (setq item (nth i res))
+    (cond
+      ((and (not done) (equal item key))
+       (setq out (append out (list key val)))
+       (setq done T)
+       (setq i (1+ i))
+       (if (< i n) (setq i (1+ i)))
+      )
+      (T
+       (setq out (append out (list item)))
+       (setq i (1+ i))
+      )
     )
   )
-  (if (not done) (setq out (append out (list (cons key val)))))
+  (if (not done) (setq out (append out (list key val))))
   out
 )
-(defun OCS:getVal (res key / p)
-  (setq p (assoc key res))
-  (if p (cdr p) nil)
+(defun OCS:getVal (res key / i n)
+  ;; 扁平 plist 取值（与 assocd 一致）：按位置 2 步进找键，返回其后一个元素
+  (OCS:assocd key res nil)
 )
 
 (defun OCS:findSimSunFile ( / winDir f)
@@ -756,8 +772,7 @@
 )
 
 (defun OCS:hasError (res / p)
-  (setq p (assoc "problem" res))
-  ;; 扫描列表中是否有 :error
+  ;; 扫描列表中是否有 error 级 problem（foreach+consp，避免 assoc 对扁平裸字符串报错）
   (OCS:findError res)
 )
 (defun OCS:findError (res / found)
@@ -1887,6 +1902,7 @@
 ;;; =====================================================================
 
 (defun OCS:makeReport (status)
+  ;; 扁平 plist (K V K V ...)，全项目统一；getVal/assocd/putPair/reportSet 已改为扁平实现
   (list "status" (if status status "进行中")
         "errors" 0
         "errorDetail" nil
@@ -1922,17 +1938,26 @@
 )
 
 ;; 用新值替换 plist 中已存在的键（不产生重复键）
-(defun OCS:reportSet (report pairs / out updated)
-  (setq out nil)
+(defun OCS:reportSet (report pairs / out done i n item)
+  ;; 扁平 plist 批量设值；pairs 为点对列表 ((K . V) ...)
   (foreach pair pairs
-    (setq updated nil out nil)
-    (foreach item report
-      (if (and (OCS:consp item) (equal (car item) (car pair)) (not updated))
-        (progn (setq out (append out (list pair))) (setq updated T))
-        (setq out (append out (list item)))
+    (setq out nil done nil i 0 n (length report))
+    (while (< i n)
+      (setq item (nth i report))
+      (if (and (not done) (equal item (car pair)))
+        (progn
+          (setq out (append out (list (car pair) (cdr pair))))
+          (setq done T)
+          (setq i (1+ i))
+          (if (< i n) (setq i (1+ i)))
+        )
+        (progn
+          (setq out (append out (list item)))
+          (setq i (1+ i))
+        )
       )
     )
-    (if (not updated) (setq out (append out (list pair))))
+    (if (not done) (setq out (append out (list (car pair) (cdr pair)))))
     (setq report out)
   )
   report
