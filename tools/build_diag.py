@@ -187,6 +187,48 @@ PROBES: list[tuple[str, str]] = [
     ),
 ]
 
+# 标准函数存在性探针名单：主文件实际用到的非项目函数（含 VL/ActiveX 扩展）
+FNPROBE_NAMES = [
+    "consp", "listp", "null", "not", "atom", "cons", "car", "cdr", "cadr", "caddr",
+    "length", "append", "assoc", "member", "reverse", "nth", "subst", "mapcar",
+    "apply", "foreach", "while", "repeat", "if", "progn", "cond", "setq", "quote",
+    "eval", "read", "type", "numberp", "stringp", "boundp", "error",
+    "strcat", "strlen", "substr", "chr", "ascii", "itoa", "atoi", "rtos", "atof",
+    "vl-prin1-to-string", "vl-symbol-name", "vl-position", "vl-list->string",
+    "=", "/=", "<", ">", "<=", ">=", "+", "-", "*", "/", "1+", "1-",
+    "fix", "float", "abs", "min", "max", "logand", "logior", "lsh", "rem",
+    "getvar", "setvar", "getenv", "findfile", "tblobjname", "tblnext",
+    "entget", "entmod", "entmake", "entdel", "entlast", "entnext", "handent",
+    "command", "alert", "princ", "prin1", "terpri", "initget", "getstring",
+    "open", "close", "read-line", "write-line",
+    "vl-load-com", "vl-catch-all-apply", "vl-catch-all-error-p",
+    "vl-catch-all-error-message", "vlax-get-acad-object",
+    "vlax-ename->vla-object", "vlax-method-applicable-p",
+    "vlax-property-available-p", "vlax-safearray->list", "vlax-variant-value",
+]
+
+FNPROBE_TEMPLATE = """;;; ocs-fnprobe.lsp - 标准函数存在性探针（vanilla LISP）
+;;; 每行打印 FN <名字> = OK 或 MISSING；若引擎对未绑定符号求值直接报错，
+;;; 输出会在报错处停止，停止点即第一个缺失函数。
+(princ "\\n==== 函数存在性探针 ====")
+%PROBES%
+(princ "\\nREAD 正确性 = ")
+(princ (if (eq (read "car") 'car) "OK" "WRONG"))
+(princ "\\n==== 函数探针结束 ====")
+(princ)
+"""
+
+
+def make_fnprobe() -> str:
+    lines = []
+    for name in FNPROBE_NAMES:
+        lines.append(
+            f'(princ "\\nFN {name} = ") '
+            f'(princ (if {name} "OK" "MISSING"))'
+        )
+    return FNPROBE_TEMPLATE.replace("%PROBES%", "\n".join(lines))
+
+
 PROBE_DRIVER = """;;; ocs-probe.lsp - 引擎特性探针驱动（vanilla LISP）
 ;;; 用法：APPLOAD 加载本文件后，命令行执行 OCS_PROBE
 ;;; 输出：逐个加载 probe/p01..p13.lsp，任一探针加载失败即指出
@@ -459,6 +501,8 @@ def main() -> int:
         print(f"PART: part{part_no}.lsp  lines {lo}-{hi}  ({len(chunk)} forms)")
 
     # ---- 3) 驱动 ----
+    write_gb2312(OUT / "ocs-fnprobe.lsp", make_fnprobe())
+    print(f"FNPROBE: ocs-fnprobe.lsp ({len(FNPROBE_NAMES)} functions)")
     write_gb2312(
         OUT / "ocs-probe.lsp",
         PROBE_DRIVER.replace("%PROBEDIR%", str(PROBE_DIR).replace("\\", "/")),

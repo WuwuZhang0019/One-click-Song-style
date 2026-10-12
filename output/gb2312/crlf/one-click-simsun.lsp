@@ -833,8 +833,10 @@
     (OCS:addProblem res "error" "无法获取活动文档")
     (progn
       (setq ro (vl-catch-all-apply 'vla-get-ReadOnly (list doc)))
+      ;; 只读降级为警告：部分克隆引擎（天正/浩辰内核）该属性存根恒返 TRUE，
+      ;; 若图纸真只读，后续写入会被 vl-catch-all 拦截并走回滚，不会损坏图纸。
       (if (and (not (vl-catch-all-error-p ro)) ro)
-        (OCS:addProblem res "error" "当前图纸为只读，不能修改")
+        (OCS:addProblem res "warn" "文档报告为只读（引擎可能误报；写入失败将自动回滚）")
         res
       )
     )
@@ -2092,6 +2094,76 @@
 ;;; =====================================================================
 ;;; 用户命令 c:YJST：方案第 8 节流程
 ;;; =====================================================================
+
+;;; 诊断命令 c:OCS_TEST：逐项跑预检步骤，精确定位哪一步挂了
+(defun c:OCS_TEST ( / res acadObj undoctl doc ro font probs okv)
+  (princ "\n==== OCS 预检分步诊断 ====")
+  ;; 复刻 OCS:Preflight 每一步，逐步打印
+  (setq res (list "ok" nil))
+  (princ (strcat "\n[1] ACADVER = " (getvar "ACADVER")))
+  (princ (strcat "\n[2] PRODUCT  = " (getvar "PRODUCT")))
+  (princ (strcat "\n[3] LISPSYS  = " (vl-prin1-to-string (getvar "LISPSYS"))))
+  (princ (strcat "\n[4] PLATFORM = " (getvar "PLATFORM")))
+  (setq acadObj (vl-catch-all-apply 'vlax-get-acad-object nil))
+  (if (vl-catch-all-error-p acadObj)
+    (princ "\n[5] vlax-get-acad-object = ERROR: Visual LISP/ActiveX 不可用")
+    (princ "\n[5] vlax-get-acad-object = OK")
+  )
+  (setq undoctl (getvar "UNDOCTL"))
+  (princ (strcat "\n[6] UNDOCTL = " (itoa undoctl)))
+  (if (= 0 (logand undoctl 1))
+    (princ "\n[7] UNDO 检查 = 失败（撤销不可用）")
+    (princ "\n[7] UNDO 检查 = OK")
+  )
+  (setq doc (vl-catch-all-apply 'vla-get-ActiveDocument (list acadObj)))
+  (if (vl-catch-all-error-p doc)
+    (princ "\n[8] ActiveDocument = ERROR")
+    (progn
+      (princ "\n[8] ActiveDocument = OK")
+      (setq ro (vl-catch-all-apply 'vla-get-ReadOnly (list doc)))
+      (if (vl-catch-all-error-p ro)
+        (princ "\n[9] ReadOnly = ERROR（接口可能不存在）")
+        (princ (strcat "\n[9] ReadOnly = " (if ro "TRUE(只读)" "FALSE(可写)")))
+      )
+    )
+  )
+  ;; 字体解析
+  (setq font (vl-catch-all-apply 'OCS:ResolveSongFont nil))
+  (if (vl-catch-all-error-p font)
+    (princ (strcat "\n[10] ResolveSongFont = ERROR: " (vl-catch-all-error-message font)))
+    (princ (strcat "\n[10] ResolveSongFont = " (vl-prin1-to-string font)))
+  )
+  ;; Blocks 接口
+  (if (vl-catch-all-error-p doc)
+    (princ "\n[11] GetBlocks = 跳过（无文档）")
+    (progn
+      (setq okv (vl-catch-all-apply 'vlax-method-applicable-p (list doc "GetBlocks")))
+      (if (vl-catch-all-error-p okv)
+        (princ "\n[11a] vlax-method-applicable-p(字符串) = ERROR")
+        (princ (strcat "\n[11a] applicable-p \"GetBlocks\" = " (if okv "T" "NIL")))
+      )
+      (setq okv (vl-catch-all-apply 'vlax-method-applicable-p (list doc 'GetBlocks)))
+      (if (vl-catch-all-error-p okv)
+        (princ "\n[11b] vlax-method-applicable-p(符号) = ERROR")
+        (princ (strcat "\n[11b] applicable-p 'GetBlocks = " (if okv "T" "NIL")))
+      )
+      (setq okv (vl-catch-all-apply 'vla-get-Blocks (list doc)))
+      (if (vl-catch-all-error-p okv)
+        (princ (strcat "\n[11c] vla-get-Blocks = ERROR: " (vl-catch-all-error-message okv)))
+        (progn
+          (princ "\n[11c] vla-get-Blocks = OK")
+          (setq okv (vl-catch-all-apply 'vla-get-Count (list okv)))
+          (if (vl-catch-all-error-p okv)
+            (princ "\n[11d] vla-get-Count = ERROR")
+            (princ (strcat "\n[11d] Blocks Count = " (itoa okv)))
+          )
+        )
+      )
+    )
+  )
+  (princ "\n==== 诊断结束；把以上输出发给开发 ====")
+  (princ)
+)
 
 (defun c:YJST ( / )
   (if *OCS:Running*

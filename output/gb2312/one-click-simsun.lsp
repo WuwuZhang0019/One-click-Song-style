@@ -833,8 +833,10 @@
     (OCS:addProblem res "error" "无法获取活动文档")
     (progn
       (setq ro (vl-catch-all-apply 'vla-get-ReadOnly (list doc)))
+      ;; 只读降级为警告：部分克隆引擎（天正/浩辰内核）该属性存根恒返 TRUE，
+      ;; 若图纸真只读，后续写入会被 vl-catch-all 拦截并走回滚，不会损坏图纸。
       (if (and (not (vl-catch-all-error-p ro)) ro)
-        (OCS:addProblem res "error" "当前图纸为只读，不能修改")
+        (OCS:addProblem res "warn" "文档报告为只读（引擎可能误报；写入失败将自动回滚）")
         res
       )
     )
@@ -2137,8 +2139,25 @@
     (progn
       (setq okv (vl-catch-all-apply 'vlax-method-applicable-p (list doc "GetBlocks")))
       (if (vl-catch-all-error-p okv)
-        (princ "\n[11] vlax-method-applicable-p = ERROR（接口可能不存在）")
-        (princ (strcat "\n[11] vlax-method-applicable-p 'GetBlocks = " (if okv "T(OK)" "NIL(不可用)")))
+        (princ "\n[11a] vlax-method-applicable-p(字符串) = ERROR")
+        (princ (strcat "\n[11a] applicable-p \"GetBlocks\" = " (if okv "T" "NIL")))
+      )
+      (setq okv (vl-catch-all-apply 'vlax-method-applicable-p (list doc 'GetBlocks)))
+      (if (vl-catch-all-error-p okv)
+        (princ "\n[11b] vlax-method-applicable-p(符号) = ERROR")
+        (princ (strcat "\n[11b] applicable-p 'GetBlocks = " (if okv "T" "NIL")))
+      )
+      (setq okv (vl-catch-all-apply 'vla-get-Blocks (list doc)))
+      (if (vl-catch-all-error-p okv)
+        (princ (strcat "\n[11c] vla-get-Blocks = ERROR: " (vl-catch-all-error-message okv)))
+        (progn
+          (princ "\n[11c] vla-get-Blocks = OK")
+          (setq okv (vl-catch-all-apply 'vla-get-Count (list okv)))
+          (if (vl-catch-all-error-p okv)
+            (princ "\n[11d] vla-get-Count = ERROR")
+            (princ (strcat "\n[11d] Blocks Count = " (itoa okv)))
+          )
+        )
       )
     )
   )
