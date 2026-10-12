@@ -2,7 +2,7 @@
 
 日期：2026-10-12
 
-状态：可执行方案，待代码实现与原生 AutoCAD 验收
+状态：代码已实现（`one-click-simsun.lsp`），静态检查通过；原生 AutoCAD 验收进行中（部分受本机环境限制，见 `docs/AutoCAD验收记录.md`）　更新：2026-10-12
 
 目标：在 Windows 完整版 AutoCAD 中执行一条 `YJST` 命令，将当前 DWG 中的文字字体统一为宋体，覆盖模型空间、全部布局、图块及属性，保留字高和字体以外的格式，暂不处理外部参照。
 
@@ -309,12 +309,12 @@ One-click Song style/
 
 ### 阶段进度
 
-- [ ] S01 目标 CAD 与关键接口验证
-- [ ] S02 字体格式扫描器
-- [ ] S03 样式 图块与属性
-- [ ] S04 标注 引线与表格
-- [ ] S05 单命令 撤销与异常恢复
-- [ ] S06 真实图纸验收与交付
+- [ ] S01 目标 CAD 与关键接口验证 —— 部分完成（2026-10-12：字体参数、Interop 元数据与官方文档核对已完成；本机 AutoCAD headless 启动即崩溃——2022 `AcPal.dll` 0xC0000005、2020 ErrorStatus=53——至少一个目标版本的字体转换与数据往返试验未完成，证据见 `docs/AutoCAD验收记录.md` 第 2 节）
+- [x] S02 字体格式扫描器 —— 完成（`OCS:NormalizeFontRuns` + `tests/font-format-cases.json` C01–C15 + `tools/check_lisp.py` PASS）
+- [x] S03 样式 图块与属性 —— 代码完成，原生结果待验证
+- [x] S04 标注 引线与表格 —— 代码完成，原生结果待验证
+- [x] S05 单命令 撤销与异常恢复 —— 代码完成，原生结果待验证
+- [ ] S06 真实图纸验收与交付 —— 交付物已生成（`one-click-simsun.lsp`、`README.md`、`docs/AutoCAD验收记录.md`、测试样例），真实 DWG 验收待在可用 AutoCAD 中执行 `tests/native/ocs-native-checks.lsp` 后回填
 
 ## 11 验收矩阵
 

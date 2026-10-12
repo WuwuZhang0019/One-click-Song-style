@@ -1,0 +1,135 @@
+{
+  "version": 1,
+  "date": "2026-10-12",
+  "targetFamily": "SimSun",
+  "notes": "纯函数扫描器 OCS:NormalizeFontRuns 的样例。expected 中的字体描述参数为方案允许的占位目标规则，最终以 S01 原生验证结果为准（见 docs/AutoCAD验收记录.md）。",
+  "targetDescriptorRule": "保留原有 |b<n>、|i<n> 与 charmap 参数；字符集按目标字体解析结果（宋体为 134）；pitch/family 按目标字体解析结果（SimSun 可变笔宽+罗马族+TrueType 标志 0x24）。",
+  "cases": [
+    {
+      "id": "C01-plain-inherit",
+      "desc": "普通文字无字体指令，不增加格式代码",
+      "input": "本页统一使用黑体，字高 3.5。",
+      "expected": "本页统一使用黑体，字高 3.5。",
+      "expectChanges": 0,
+      "expectErrors": 0
+    },
+    {
+      "id": "C02-font-arial-bold-italic",
+      "desc": "指定 Arial 且带粗斜参数，替换字体族并保留 b/i",
+      "input": "{\\fArial|b1|i0;标题正文}",
+      "expected": "{\\fSimSun|b1|i0|c134|pf22;标题正文}",
+      "expectChanges": 1,
+      "expectErrors": 0
+    },
+    {
+      "id": "C03-height-nested-fonts",
+      "desc": "\\H0.7x; 字高覆盖保持，嵌套花括号各段字体识别",
+      "input": "{\\H0.7x;\\fSimHei|b0|i1;说明段落}",
+      "expected": "{\\H0.7x;\\fSimSun|b0|i1|c134|pf22;说明段落}",
+      "expectChanges": 1,
+      "expectErrors": 0
+    },
+    {
+      "id": "C04-paragraph-codes",
+      "desc": "\\P、段落缩进与行距保持",
+      "input": "\\pl1;第一段\\P第二段\\fTimes New Roman;第三段",
+      "expected": "\\pl1;第一段\\P第二段\\fSimSun|c134|pf22;第三段",
+      "expectChanges": 1,
+      "expectErrors": 0
+    },
+    {
+      "id": "C05-stack-diameter-tolerance",
+      "desc": "\\S1/2; 堆叠结构与直径、公差符号保持",
+      "input": "%%c12 \\fISOCPEUR;\\S1/2; 完",
+      "expected": "%%c12 \\fSimSun|c134|pf22;\\S1/2; 完",
+      "expectChanges": 1,
+      "expectErrors": 0
+    },
+    {
+      "id": "C06-field-code-protected",
+      "desc": "%<...>% 字段表达式中的 \\f 是字段格式，不能替换",
+      "input": "值 %<\\f\\H0.5x;\\C1;\\f% \\pr \\\"0.00\\\";.Measured|%fml \\f+1; %>结束",
+      "expected": "值 %<\\f\\H0.5x;\\C1;\\f% \\pr \\\"0.00\\\";.Measured|%fml \\f+1; %>结束",
+      "expectChanges": 0,
+      "expectErrors": 0
+    },
+    {
+      "id": "C07-escaped-backslash-brace",
+      "desc": "转义反斜杠与花括号不误识别为格式开关",
+      "input": "路径 C:\\\\temp\\\\{图} 与 \\\\fArial 不变",
+      "expected": "路径 C:\\\\temp\\\\{图} 与 \\\\fArial 不变",
+      "expectChanges": 0,
+      "expectErrors": 0
+    },
+    {
+      "id": "C08-long-mixed-text",
+      "desc": "超过 1000 字符的中英混合内容完整往返，第二次处理结果完全相同",
+      "input": "@LONG_MIXED@",
+      "expected": "@LONG_MIXED@",
+      "expectChanges": 0,
+      "expectErrors": 0,
+      "synthetic": {
+        "kind": "repeat-mixed",
+        "pattern": "英文 ABC 与中文 宋体测试",
+        "count": 60
+      }
+    },
+    {
+      "id": "C09-already-simsun",
+      "desc": "已经使用宋体的内容不产生有效修改",
+      "input": "{\\fSimSun|b0|i0|c134|pf22;已统一}",
+      "expected": "{\\fSimSun|b0|i0|c134|pf22;已统一}",
+      "expectChanges": 0,
+      "expectErrors": 0
+    },
+    {
+      "id": "C10-incomplete-code-error",
+      "desc": "不完整字体指令返回可定位解析错误，不返回伪造成功内容",
+      "input": "前面{\\fArial",
+      "expected": null,
+      "expectChanges": 0,
+      "expectErrors": 1,
+      "expectErrorCode": "UNTERMINATED_FONT"
+    },
+    {
+      "id": "C11-nested-two-fonts",
+      "desc": "方案第 5 节嵌套格式用例：替换两个字体族，保留 b1、i1、\\H0.7x;、\\P 与花括号作用域",
+      "input": "{\\fArial|b1|i0;标题}\\P{\\H0.7x;\\fSimHei|b0|i1;说明}",
+      "expected": "{\\fSimSun|b1|i0|c134|pf22;标题}\\P{\\H0.7x;\\fSimSun|b0|i1|c134|pf22;说明}",
+      "expectChanges": 2,
+      "expectErrors": 0
+    },
+    {
+      "id": "C12-underline-color-preserved",
+      "desc": "下划线、颜色与字距代码保持",
+      "input": "\\C3;\\fCourier New;固定\\fSimSun;字宽\\Q5;尾",
+      "expected": "\\C3;\\fSimSun|c134|pf22;固定\\fSimSun|c134|pf22;字宽\\Q5;尾",
+      "expectChanges": 2,
+      "expectErrors": 0
+    },
+    {
+      "id": "C13-second-run-zero",
+      "desc": "第二次运行零有效修改（幂等）",
+      "input": "{\\fSimSun|b1|i0|c134|pf22;幂等}",
+      "expected": "{\\fSimSun|b1|i0|c134|pf22;幂等}",
+      "expectChanges": 0,
+      "expectErrors": 0
+    },
+    {
+      "id": "C14-chinese-font-name-in-body",
+      "desc": "正文中的字体名称不能误改",
+      "input": "本页统一使用黑体与 Arial 字体名说明",
+      "expected": "本页统一使用黑体与 Arial 字体名说明",
+      "expectChanges": 0,
+      "expectErrors": 0
+    },
+    {
+      "id": "C15-nested-field-inside-format",
+      "desc": "字段嵌套在格式作用域内，字段整体保持原样",
+      "input": "{\\fArial|b1;i;前 %<\\\\AcVar \\f\\\\H;>后}",
+      "expected": "{\\fSimSun|b1|c134|pf22;i;前 %<\\\\AcVar \\f\\\\H;>后}",
+      "expectChanges": 1,
+      "expectErrors": 0
+    }
+  ]
+}
