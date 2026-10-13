@@ -72,7 +72,8 @@
 ;;   (setq res (OCS:addProblem res "error" "Blocks 集合接口不可用")))
 
 ;;; ------------------------- 全局状态 -------------------------
-(setq *OCS:Version*      "0.2.5")
+(setq *OCS:Version*      "0.2.9")
+(setq *OCS:CheckOnly* nil *OCS:LastCheckReport* nil)
 (setq *OCS:Stage* "初始化")
 (setq *OCS:FailureMessage* nil *OCS:ProbeStyle* nil *OCS:UndoAttempted* nil)
 (setq *OCS:Plan*         nil)   ; 修改计划
@@ -1316,7 +1317,7 @@
 
 ;; 按对象类型分发
 (defun OCS:handleEntity (res doc e typ ctx handle / cls)
-  (setq cls (OCS:mapClass typ))
+  (setq cls (if *OCS:CheckOnly* "other" (OCS:mapClass typ)))
   (OCS:trace "ENTITY" (list "handle" handle "type" typ "class" cls "context" ctx "layer" (OCS:safeProp e 'Layer)))
   (cond
     ((equal cls "text")     (OCS:collectTextHost res doc e ctx handle typ))
@@ -1334,6 +1335,9 @@
      ;; 专业/代理对象：记录为未覆盖
      (if (OCS:isUnknownClass typ)
        (progn
+         (if (and *OCS:CheckOnly* (OCS:tchKind typ))
+           (setq res (OCS:lstAppend res "tchCandidates"
+             (list "obj" e "type" typ "handle" handle "ctx" ctx))))
          (setq res (OCS:putPair res "unknown" (1+ (OCS:getVal res "unknown" 0))))
          (OCS:trace "UNSUPPORTED_OBJECT" (list handle typ ctx))
          (setq res (OCS:lstAppend res "skipped"
@@ -1368,14 +1372,18 @@
     ((or (= clsName "acad_attribute") (= clsName "acdbattribute"))  "attrib")
     ((or (= clsName "acad_attributereference") (= clsName "acdbattributereference")) "attrib")
     ((or (= clsName "acad_attributedefinition") (= clsName "acdbattributedefinition")) "attdef")
-    ((OCS:strContains clsName "dimension")                    "dim")
+    ;; 日期：2026-10-13。类名含关键字不能证明支持原生接口，天正标注会误报 TextOverride。
+    ((member clsName (list "acdbaligneddimension" "acdbrotateddimension"
+       "acdb2lineangulardimension" "acdb3pointangulardimension"
+       "acdbdiametricdimension" "acdbradialdimension" "acdbradialdimensionlarge"
+       "acdbarcdimension" "acdbordinatedimension" "acdbdimension"
+       "acad_dimension")) "dim")
     ;; 专业对象名称含 Leader 不代表具备普通引线接口，必须匹配原生类名。
     ((member clsName (list "acdbmleader" "acad_mleader"))      "mleader")
     ((member clsName (list "acdbleader" "acad_leader"))       "leader")
-    ((OCS:strContains clsName "table")                        "table")
-    ((OCS:strContains clsName "tolerance")                    "tolerance")
+    ((member clsName (list "acdbtable" "acad_table"))         "table")
+    ((member clsName (list "acdbtolerance" "acad_tolerance")) "tolerance")
     ((or (= clsName "acad_blockreference") (= clsName "acdbblockreference")) "blockref")
-    ((OCS:strContains clsName "wblock")                       "blockref")
     (T "other")
   )
 )
@@ -2253,6 +2261,11 @@
   (princ (strcat "\n专业对象未覆盖：" (itoa (OCS:assocd "uncovered" report 0))
                  "　错误：" (itoa (OCS:assocd "errors" report 0))
                  "　恢复失败：" (itoa (OCS:assocd "recoverFailed" report 0))))
+  (if (OCS:assocd "tchChecked" report nil)
+    (princ (strcat "\n天正公开字体核验：通过 " (itoa (OCS:assocd "tchPassed" report 0))
+      "　不一致 " (itoa (OCS:assocd "tchMismatch" report 0))
+      "　无法核验 " (itoa (OCS:assocd "tchUnknown" report 0))
+      "（仅公开样式与可读内容）")))
   (if (OCS:assocd "errorDetail" report nil)
     (progn
       (princ "\n错误明细：")
@@ -2260,13 +2273,7 @@
         (princ (strcat "\n  " (OCS:fmt d))))
     )
   )
-  (if (OCS:assocd "uncoveredDetail" report nil)
-    (progn
-      (princ "\n未覆盖明细（句柄/位置）：")
-      (foreach d (OCS:assocd "uncoveredDetail" report nil)
-        (princ (strcat "\n  " (OCS:fmt d))))
-    )
-  )
+  (princ "\n天正字体核查未执行；需要时输入 YJSTCHECK。未覆盖明细仅保留在日志中。")
   (princ (strcat "\n详细记录：*OCS:LastReport*"))
   (princ)
   report
@@ -2361,10 +2368,25 @@
   (princ)
 )
 
+;; 日期：2026-10-13。最后一行显示执行结果，保留部分完成与回滚的真实状态。
+(defun OCS:finishMessage (report / status uncovered)
+  (setq status (OCS:assocd "status" report "结果未知")
+        uncovered (OCS:assocd "uncovered" report 0))
+  (cond
+    ((or (> (OCS:assocd "errors" report 0) 0)
+         (> (OCS:assocd "recoverFailed" report 0) 0)
+         (not (member status (list "已完成" "无需修改" "部分完成"))))
+     (strcat "\n==== YJST 执行失败：" status "，请查看上方错误明细和日志。 ===="))
+    ((or (= status "部分完成") (> uncovered 0))
+     (strcat "\n==== YJST 执行成功（部分完成）：仍有 " (itoa uncovered)
+             " 个专业对象未覆盖，详情见日志；可输入 YJSTCHECK 核查。 ===="))
+    ((= status "无需修改") "\n==== YJST 执行成功：无需修改。 ====")
+    (T "\n==== YJST 执行成功。 ====")))
+
 (defun c:YJST ( / r report)
   (cond
-    (*OCS:Running* (princ "\nYJST：上一次运行尚未结束。"))
-    (*OCS:UndoMark* (princ "\nYJST：上次撤销分组未能关闭，请先检查恢复失败明细。"))
+    (*OCS:Running* (princ "\nYJST 执行失败：上一次运行尚未结束，本次未启动。"))
+    (*OCS:UndoMark* (princ "\nYJST 执行失败：上次撤销分组未能关闭，本次未启动，请先检查恢复失败明细。"))
     (T
       (setq *OCS:Running* T *OCS:Plan* nil *OCS:TempState* nil *OCS:Wrote* nil
             *OCS:UndoAttempted* nil *OCS:FailureMessage* nil *OCS:ProbeStyle* nil)
@@ -2386,7 +2408,8 @@
         (OCS:trace "REPORT_ERROR" (vl-catch-all-error-message r)))
       (OCS:trace "RUN_END" (OCS:assocd "status" report "?"))
       (setq *OCS:TraceActive* nil)
-      (c:YJSTLOG)))
+      (c:YJSTLOG)
+      (princ (OCS:finishMessage report))))
   (princ)
 )
 
@@ -2457,11 +2480,167 @@
     (OCS:recoverReport report)
     (if (not (OCS:endUndoGroup))
       (OCS:recoverReport (OCS:appendError report "UNDO" "关闭撤销分组失败"))
-      (OCS:putPair report "status"
-        (cond ((> (OCS:assocd "uncovered" report 0) 0) "部分完成")
-              ((and (= (OCS:assocd "stylesModified" report 0) 0)
-                    (= (OCS:assocd "fontRunsChanged" report 0) 0)) "无需修改")
-              (T "已完成")))))
+      (progn
+        ;; 日期：2026-10-13。额外天正核查由 YJSTCHECK 按需执行，转换读回与回滚校验仍保留。
+        (OCS:putPair report "status"
+          (cond ((> (OCS:assocd "uncovered" report 0) 0) "部分完成")
+                ((and (= (OCS:assocd "stylesModified" report 0) 0)
+                      (= (OCS:assocd "fontRunsChanged" report 0) 0)) "无需修改")
+                (T "已完成"))))))
+)
+
+;;; 日期：2026-10-13。天正公开字体只读核验；未知结构不推断通过。
+(defun OCS:checkFlow ( / stats report)
+  ;; 重新枚举当前文档，不能复用上次 YJST 的对象引用或转换前状态。
+  (setq stats (OCS:CollectHosts))
+  (if (OCS:hasError stats) (OCS:fail (OCS:fmt (OCS:problemsOf stats))))
+  (setq *OCS:Plan* (list "stats" stats))
+  (setq report (OCS:verifyTchReport (OCS:runStats (OCS:makeReport "核查完成") nil nil)))
+  (if (or (> (OCS:assocd "tchMismatch" report 0) 0)
+          (> (OCS:assocd "tchUnknown" report 0) 0))
+    (OCS:putPair report "status" "核查完成，存在不一致或无法核验项")
+    report)
+)
+
+(defun c:YJSTCHECK ( / r report *OCS:CheckOnly* *OCS:Plan* *OCS:FailureMessage*)
+  (cond
+    (*OCS:Running* (princ "\nYJSTCHECK 未启动：上一次运行尚未结束。"))
+    (*OCS:UndoMark* (princ "\nYJSTCHECK 未启动：请先处理上次恢复失败。"))
+    (T
+      (setq *OCS:Running* T *OCS:CheckOnly* T)
+      (princ (strcat "\nYJSTCHECK v" *OCS:Version* " 开始只读核查当前图纸的天正公开字体..."))
+      (OCS:logStart)
+      (OCS:trace "COMMAND" "YJSTCHECK")
+      (setq r (vl-catch-all-apply 'OCS:checkFlow nil))
+      (setq report (if (vl-catch-all-error-p r)
+        (OCS:appendError (OCS:makeReport "核查失败") *OCS:Stage* (OCS:errorText r)) r))
+      (setq *OCS:Running* nil)
+      (setq report (OCS:putPair report "logPath" *OCS:LogPath*)
+            *OCS:LastCheckReport* report)
+      (OCS:trace "RUN_RESULT" report)
+      (princ (strcat "\n天正公开字体核查：通过 " (itoa (OCS:assocd "tchPassed" report 0))
+        "　不一致 " (itoa (OCS:assocd "tchMismatch" report 0))
+        "　无法核验 " (itoa (OCS:assocd "tchUnknown" report 0))
+        "　错误 " (itoa (OCS:assocd "errors" report 0))))
+      (princ "\n仅核查公开样式与可读内容；未覆盖及核查明细见日志或 *OCS:LastCheckReport*。")
+      (OCS:trace "RUN_END" (OCS:assocd "status" report "核查失败"))
+      (setq *OCS:TraceActive* nil)
+      (c:YJSTLOG)
+      (princ (strcat "\n==== YJSTCHECK " (OCS:assocd "status" report "核查失败") " ==== "))))
+  (princ)
+)
+
+(defun OCS:tchKind (typ)
+  (cond ((= (strcase typ) "TDBTEXT") "TCH_TEXT")
+        ((= (strcase typ) "TDBMTEXT") "TCH_MTEXT")
+        ((= (strcase typ) "TDBDRAWINGNAME") "TCH_DRAWINGNAME")
+        ((= (strcase typ) "TDBSYMBMULTILEADER") "TCH_MULTILEADER")
+        ((= (strcase typ) "TDBDIMENSION2") "TCH_DIMENSION2")
+        (T nil))
+)
+
+;; 只取指定子类内的字段，不把其他子类和 XData 混入内容或样式。
+(defun OCS:tchSection (data section / active out p)
+  (setq active nil out nil)
+  (foreach p data
+    (cond ((= (car p) 100) (setq active (= (cdr p) section)))
+          ((>= (car p) 1000) (setq active nil))
+          (active (setq out (cons p out)))))
+  (reverse out)
+)
+
+(defun OCS:tchOne (data code / values p)
+  (setq values nil)
+  (foreach p data (if (= (car p) code) (setq values (cons (cdr p) values))))
+  (if (= (length values) 1) (car values) nil)
+)
+
+(defun OCS:checkTchObject (item / data kind section refs texts codes code val ent st scan reason status names)
+  (setq data (entget (vlax-vla-object->ename (OCS:assocd "obj" item nil)))
+        kind (OCS:tchKind (OCS:assocd "type" item ""))
+        refs nil texts nil reason nil status "pass" names nil)
+  (if (= kind "TCH_DIMENSION2")
+    (list "status" "unknown" "reason" "天正标注未适配可完整核验的公开字体结构，未调用 TextOverride")
+    (if (or (not data) (not (equal (OCS:assocd 0 data "") kind)))
+    (list "status" "unknown" "reason" "entget 未返回匹配的天正公开记录")
+    (progn
+      (cond
+        ((= kind "TCH_DRAWINGNAME")
+         (setq section (OCS:tchSection data "TDbDrawingName") codes (list 1 2))
+         (foreach code (list 340 341)
+           (setq val (OCS:tchOne section code))
+           (setq ent (if (OCS:stringp val) (handent val) val))
+           (setq refs (cons ent refs))))
+        ((= kind "TCH_MULTILEADER")
+         (setq val (OCS:tchOne (OCS:tchSection data "TDbSymbWithText") 7))
+         (setq refs (list (if (and (OCS:stringp val) (/= val "")) (tblobjname "STYLE" val) nil)))
+         (setq section (OCS:tchSection data "TDbSymbMultiLeader") codes (list 1 2)))
+        (T
+         (setq section (OCS:tchSection data "TDbText") codes (list 1))
+         (setq val (OCS:tchOne section 7))
+         (setq refs (list (if (and (OCS:stringp val) (/= val "")) (tblobjname "STYLE" val) nil)))
+         (if (and (= kind "TCH_MTEXT") (not (OCS:tchSection data "TDbMText")))
+           (setq reason "缺少 TDbMText 子类数据" status "unknown"))))
+      (foreach code codes
+        (setq val (OCS:tchOne section code))
+        (if (not (OCS:stringp val))
+          (setq reason "文字字段缺失或重复" status "unknown")
+          (setq texts (cons val texts))))
+      ;; 未知分段内容不只检查第一段；字段表达式也不猜测显示字体。
+      (if (assoc 3 section) (setq reason "存在尚未适配的分段文字" status "unknown"))
+      (foreach val texts
+        (if (OCS:containsField val)
+          (setq reason "含字段表达式，无法完整核验" status "unknown")
+          (progn
+            (setq scan (OCS:NormalizeFontRuns val (OCS:fontTarget)))
+            (cond ((OCS:assocd "issues" scan nil)
+                   (setq reason "文字格式无法完整解析" status "unknown"))
+                  ((and (> (OCS:assocd "changes" scan 0) 0) (/= status "unknown"))
+                   (setq reason "可读文字含非宋体局部字体覆盖" status "mismatch"))))))
+      (foreach ent refs
+        (setq st (if ent (entget ent) nil))
+        (if (not (equal (OCS:assocd 0 st "") "STYLE"))
+          (setq reason "样式引用缺失或未指向 STYLE" status "unknown")
+          (progn
+            (setq names (cons (OCS:assocd 2 st "?") names))
+            (if (and (not (OCS:styleIsTarget ent)) (/= status "unknown"))
+              (setq reason "引用样式不是目标宋体或大字体非空" status "mismatch")))))
+      (list "status" status "reason" (if reason reason "公开样式引用与可读内容符合宋体要求")
+            "styles" (reverse names)))))
+)
+
+(defun OCS:verifyTchReport (report / candidates item r saved passed mismatch unknown details issues handles entry kept count)
+  (setq candidates (OCS:assocd "tchCandidates" (OCS:assocd "stats" *OCS:Plan* nil) nil)
+        passed 0 mismatch 0 unknown 0 details nil issues nil handles nil)
+  (foreach item candidates
+    (OCS:setStage (strcat "天正公开字体核验 [" (OCS:assocd "handle" item "?") "]"))
+    (setq saved *OCS:FailureMessage*)
+    (setq r (vl-catch-all-apply 'OCS:checkTchObject (list item)))
+    (setq *OCS:FailureMessage* saved)
+    (if (vl-catch-all-error-p r)
+      (setq r (list "status" "unknown" "reason" (vl-catch-all-error-message r))))
+    (setq r (OCS:putPair r "handle" (OCS:assocd "handle" item "?")))
+    (setq r (OCS:putPair r "type" (OCS:assocd "type" item "?")))
+    (setq r (OCS:putPair r "location" (OCS:ctxStr (OCS:assocd "ctx" item nil))))
+    (OCS:trace "TCH_VERIFY" r)
+    (setq details (cons r details))
+    (cond ((= (OCS:assocd "status" r "") "pass")
+           (setq passed (1+ passed) handles (cons (OCS:assocd "handle" item "?") handles)))
+          ((= (OCS:assocd "status" r "") "mismatch") (setq mismatch (1+ mismatch)))
+          (T (setq unknown (1+ unknown))))
+    (if (/= (OCS:assocd "status" r "") "pass") (setq issues (cons r issues))))
+  (setq kept nil count 0)
+  (foreach entry (OCS:assocd "uncoveredDetail" report nil)
+    (if (and (= (car entry) "PROXY_OR_PRO") (member (cadr entry) handles))
+      (setq count (1+ count)) (setq kept (cons entry kept))))
+  (setq report (OCS:putPair report "uncovered" (- (OCS:assocd "uncovered" report 0) count)))
+  (setq report (OCS:putPair report "uncoveredDetail" (reverse kept)))
+  (setq report (OCS:putPair report "tchChecked" T))
+  (setq report (OCS:putPair report "tchPassed" passed))
+  (setq report (OCS:putPair report "tchMismatch" mismatch))
+  (setq report (OCS:putPair report "tchUnknown" unknown))
+  (setq report (OCS:putPair report "tchDetails" (reverse details)))
+  (OCS:putPair report "tchIssues" (reverse issues))
 )
 
 (defun OCS:applyAllStyles ( / modified err r st ent updated)
@@ -2808,7 +2987,7 @@
 
 (if (and (boundp '*OCS:Version*) *OCS:Version*)
 (princ (strcat "\n一键统一宋体（YJST）v" *OCS:Version*
-                 " 已加载。输入 YJST 执行，YJSTLOG 查看日志路径。"))
+                 " 已加载。YJST 转换，YJSTCHECK 核查，YJSTLOG 查看日志路径。"))
   (princ "\n一键统一宋体（YJST）已加载。输入 YJST 执行。")
 )
 (princ)

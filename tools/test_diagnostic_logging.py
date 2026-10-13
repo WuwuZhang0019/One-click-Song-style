@@ -68,6 +68,33 @@ class DiagnosticLoggingTests(unittest.TestCase):
         self.assertEqual('预检失败', rows[-1][4])
         self.assertEqual(set(), self.cad.logs.handles)
 
+    def test_tianzheng_dimension_never_calls_standard_textoverride(self):
+        obj = self.cad.add(self.cad.entity('TDbDimension2', '1E76', ''))
+        before = deepcopy(obj)
+        def unexpected(obj):
+            raise RuntimeError('ActiveX 服务器返回错误: 未知名称: TextOverride')
+        self.rt.native['vla-get-textoverride'] = unexpected
+        self.call('c:YJST')
+        self.assertEqual('部分完成', self.value('status'))
+        self.assertEqual(0, self.value('errors'))
+        self.assertIsNone(self.value('tchChecked'))
+        self.assertEqual(1, self.value('uncovered'))
+        self.assertEqual(before, obj)
+        self.assertNotIn('VLA-GET-TEXTOVERRIDE', self.log())
+        self.assertIn('1E76', str(self.value('uncoveredDetail')))
+
+    def test_standard_classes_are_explicit_and_substring_lookalikes_rejected(self):
+        for name, expected in [('AcDbAlignedDimension', 'dim'), ('AcDbRotatedDimension', 'dim'),
+                ('AcDb2LineAngularDimension', 'dim'), ('AcDb3PointAngularDimension', 'dim'),
+                ('AcDbDiametricDimension', 'dim'), ('AcDbRadialDimension', 'dim'),
+                ('AcDbRadialDimensionLarge', 'dim'), ('AcDbArcDimension', 'dim'),
+                ('AcDbOrdinateDimension', 'dim'), ('AcDbTable', 'table'),
+                ('AcDbTolerance', 'tolerance'), ('AcDbBlockReference', 'blockref')]:
+            self.assertEqual(expected, self.call('OCS:mapClass', name), name)
+        for name in ('TDbDimension2', 'TDbTable', 'TDbTolerance', 'TDbWBlock',
+                     'VendorDimension', 'AcDbCustomDimension'):
+            self.assertEqual('other', self.call('OCS:mapClass', name), name)
+
     def test_new_run_does_not_overwrite_previous_log(self):
         self.call('c:YJST')
         first_path, first_log = self.rt.get('*ocs:logpath*'), self.log()
