@@ -23,7 +23,7 @@ FF_SWISS = 32
 TMPF_TRUETYPE = 4
 
 # SimSun: variable pitch, roman (serif) family, TrueType
-SIMPITCHFAMILY = VARIABLE_PITCH | FF_ROMAN | TMPF_TRUETYPE  # 0x24 = 36
+SIMPITCHFAMILY = VARIABLE_PITCH | FF_ROMAN | TMPF_TRUETYPE  # 0x16 = 22
 SIM_CHARSET = GB2312_CHARSET  # 134
 
 SUN_FAMILY = "SimSun"
@@ -57,11 +57,9 @@ def expected_simsun_1071(bold: bool = False, italic: bool = False) -> int:
 def mtext_font_code(family: str, *, bold: int = 0, italic: int = 0) -> str:
     """Font switch code used inside MTEXT raw content.
 
-    Note: the MTEXT pitch/family parameter is the raw Win32 value WITHOUT the
-    TrueType flag (that flag appears only in DXF group 1071 / SetFont), so
-    SimSun uses pf22 (VARIABLE_PITCH|FF_ROMAN) here and pf36 (0x24) in 1071.
+    日期：2026-10-13。采用与 SetFont 一致的候选参数 22，仍需原生读回验证。
     """
-    pf = SIMPITCHFAMILY & 0x0F  # 22 = VARIABLE_PITCH|FF_ROMAN (TrueType flag stripped)
+    pf = SIMPITCHFAMILY  # 2 | 16 | 4 = 22，与 LISP 目标参数一致
     return f"\\f{family}|b{bold}|i{italic}|c{SIM_CHARSET}|pf{pf};"
 
 

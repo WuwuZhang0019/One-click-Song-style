@@ -20,7 +20,7 @@ from pathlib import Path
 
 # 需要纳入同一构建与校验流程的实际加载文件清单（入口 + 辅助文件）。
 # 只有被 CAD 实际 LOAD/APPLOAD 的文件才放入 output/gb2312。
-LOAD_FILES = ["one-click-simsun.lsp"]
+LOAD_FILES = ["one-click-simsun.lsp", "tests/native/ocs-native-checks.lsp"]
 
 
 def convert_one(source: Path, target: Path) -> int:

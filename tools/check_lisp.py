@@ -9,12 +9,10 @@ Checks (development tool; not an AutoCAD acceptance test):
   2. Top-level forms parse into a nested S-expression tree (grammar check).
   3. Every OCS:/c: definition is unique; report defined functions.
   4. Required plan functions (section 8 of the plan) exist.
-  5. Runs pure-function test vectors for OCS:NormalizeFontRuns if the lisp
-     exposes a pure-parse entry (OCS:Parse) plus a small interpreter.
-     The interpreter is Python re-implementation of the scanner contract used
-     only to cross-check *case expectations* in font-format-cases.json against
-     the JSON's own expected outputs (self-consistency), and to verify that
-     the LISP source contains the same case-driving constants.
+  5. Checks JSON vector consistency (does NOT execute the LISP scanner).
+  6. Checks project function arities and if/setq shapes.
+
+日期：2026-10-13。实际源码执行回归见 tools/test_lisp_runtime.py。
 
 Exit code 0 when all hard checks pass; 1 otherwise.
 """
@@ -327,6 +325,10 @@ def main() -> int:
         forms = []
 
     if forms:
+        from lisp_eval import arity_errors
+        call_errors = arity_errors(text)
+        report["errors"].extend(call_errors)
+        hard_fail = hard_fail or bool(call_errors)
         defs, dupes = collect_defs(forms)
         report["info"]["defined_functions"] = len(defs)
         if dupes:

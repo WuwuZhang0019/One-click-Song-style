@@ -1,9 +1,9 @@
 {
   "version": 1,
-  "date": "2026-10-12",
+  "date": "2026-10-13",
   "targetFamily": "SimSun",
   "notes": "纯函数扫描器 OCS:NormalizeFontRuns 的样例。expected 中的字体描述参数为方案允许的占位目标规则，最终以 S01 原生验证结果为准（见 docs/AutoCAD验收记录.md）。",
-  "targetDescriptorRule": "保留原有 |b<n>、|i<n> 与 charmap 参数；字符集按目标字体解析结果（宋体为 134）；pitch/family 按目标字体解析结果（SimSun 可变笔宽+罗马族+TrueType 标志 0x24）。",
+  "targetDescriptorRule": "保留原有 |b<n>、|i<n> 与 charmap 参数；字符集按目标字体解析结果（宋体为 134）；pitch/family 按目标字体解析结果（SimSun 可变笔宽+罗马族+TrueType 标志 0x16）。",
   "cases": [
     {
       "id": "C01-plain-inherit",
@@ -48,8 +48,8 @@
     {
       "id": "C06-field-code-protected",
       "desc": "%<...>% 字段表达式中的 \\f 是字段格式，不能替换",
-      "input": "值 %<\\f\\H0.5x;\\C1;\\f% \\pr \\\"0.00\\\";.Measured|%fml \\f+1; %>结束",
-      "expected": "值 %<\\f\\H0.5x;\\C1;\\f% \\pr \\\"0.00\\\";.Measured|%fml \\f+1; %>结束",
+      "input": "值 %<\\f\\H0.5x;\\C1;\\f% \\pr \\\"0.00\\\";.Measured|%fml \\f+1; >%结束",
+      "expected": "值 %<\\f\\H0.5x;\\C1;\\f% \\pr \\\"0.00\\\";.Measured|%fml \\f+1; >%结束",
       "expectChanges": 0,
       "expectErrors": 0
     },
@@ -103,8 +103,8 @@
       "id": "C12-underline-color-preserved",
       "desc": "下划线、颜色与字距代码保持",
       "input": "\\C3;\\fCourier New;固定\\fSimSun;字宽\\Q5;尾",
-      "expected": "\\C3;\\fSimSun|c134|pf22;固定\\fSimSun|c134|pf22;字宽\\Q5;尾",
-      "expectChanges": 2,
+      "expected": "\\C3;\\fSimSun|c134|pf22;固定\\fSimSun;字宽\\Q5;尾",
+      "expectChanges": 1,
       "expectErrors": 0
     },
     {
@@ -126,8 +126,8 @@
     {
       "id": "C15-nested-field-inside-format",
       "desc": "字段嵌套在格式作用域内，字段整体保持原样",
-      "input": "{\\fArial|b1;i;前 %<\\\\AcVar \\f\\\\H;>后}",
-      "expected": "{\\fSimSun|b1|c134|pf22;i;前 %<\\\\AcVar \\f\\\\H;>后}",
+      "input": "{\\fArial|b1;i;前 %<\\\\AcVar \\f\\\\H;>%后}",
+      "expected": "{\\fSimSun|b1|c134|pf22;i;前 %<\\\\AcVar \\f\\\\H;>%后}",
       "expectChanges": 1,
       "expectErrors": 0
     }

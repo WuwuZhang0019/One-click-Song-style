@@ -2,7 +2,7 @@
 ;;; one-click-simsun.lsp
 ;;; 一键统一宋体（YJST）：将当前图纸文字字体统一为宋体（SimSun）
 ;;;
-;;; 日期：2026-10-12
+;;; 日期：2026-10-13
 ;;; 状态：实现完成，待原生 AutoCAD 验收（见 docs/AutoCAD验收记录.md）
 ;;; 编码：开发源码 UTF-8（无 BOM）；CAD 加载请使用 output/gb2312/ 交付文件
 ;;;
@@ -20,9 +20,9 @@
 (vl-load-com)
 
 ;;; =====================================================================
-;;; 引擎兼容垫片：适配天正/浩辰等精简 LISP 引擎缺失的标准函数
-;;; 已知缺失：consp、stringp、error；vlax-method-applicable-p 返 NIL
-;;; 但方法实际可用（如 GetBlocks 接口检查返 NIL 但直接调用 OK）
+;;; AutoLISP 辅助函数：不依赖 Common Lisp 的 consp/stringp/error。
+;;; Blocks 是 ActiveX 属性，直接调用 vla-get-Blocks 验证。
+;;; 不能凭这些函数或属性/方法探针结果判断 CAD 厂商。
 ;;; =====================================================================
 
 ;; consp：(and (listp x) (not (atom x)))
@@ -57,6 +57,7 @@
 
 ;; error：用 (exit) 硬退（引擎无 error 函数时）
 (defun OCS:fail (msg)
+  (setq *OCS:FailureMessage* msg)
   (princ (strcat "\nOCS 错误：" msg))
   (exit)
 )
@@ -71,20 +72,162 @@
 ;;   (setq res (OCS:addProblem res "error" "Blocks 集合接口不可用")))
 
 ;;; ------------------------- 全局状态 -------------------------
-(setq *OCS:Version*      "0.1.0")
+(setq *OCS:Version*      "0.2.5")
+(setq *OCS:Stage* "初始化")
+(setq *OCS:FailureMessage* nil *OCS:ProbeStyle* nil *OCS:UndoAttempted* nil)
 (setq *OCS:Plan*         nil)   ; 修改计划
 (setq *OCS:Report*       nil)   ; 结构化报告
 (setq *OCS:LastReport*   nil)   ; 最近一次运行（供调试/自动验收读取）
 (setq *OCS:Running*      nil)   ; 重入保护
 (setq *OCS:UndoMark*     nil)   ; 本次 Undo 分组标记
+(setq *OCS:Wrote*        nil)   ; 分组内至少一次写入成功，才允许撤销
 (setq *OCS:TempState*    nil)   ; 临时状态（锁定层、表格再生、OSMODE 等）
 (setq *OCS:EscRequested* nil)   ; Esc/取消请求
 (setq *OCS:FaultPoint*   nil)   ; 故障注入点（OCS:TestFault 用）
 
+;;; 日期：2026-10-13。每次命令独立落盘；日志失败不得改变业务结果。
+(setq *OCS:LogPath* nil *OCS:LogEncoding* nil *OCS:LogError* nil)
+(setq *OCS:LogTail* nil *OCS:LogSeq* 0 *OCS:TraceActive* nil)
+
+(defun OCS:logVar (name / result)
+  (setq result (vl-catch-all-apply 'getvar (list name)))
+  (if (vl-catch-all-error-p result) nil result)
+)
+
+(defun OCS:logOpen (path mode)
+  (if (= *OCS:LogEncoding* "UTF-8")
+    (open path mode "utf8")
+    (open path mode))
+)
+
+(defun OCS:logWriteLine (line / fd result closed)
+  (setq fd (OCS:logOpen *OCS:LogPath* "a"))
+  (if fd
+    (progn
+      (setq result (vl-catch-all-apply 'write-line (list line fd)))
+      ;; 即使写入失败也关闭文件；每条记录落盘，保留异常前的最后一个接口。
+      (setq closed (vl-catch-all-apply 'close (list fd)))
+      (cond
+        ((vl-catch-all-error-p result) (vl-catch-all-error-message result))
+        ((vl-catch-all-error-p closed) (vl-catch-all-error-message closed))
+        (T nil)))
+    "无法打开日志文件")
+)
+
+(defun OCS:traceBody (event data / line problem)
+  (setq *OCS:LogSeq* (1+ *OCS:LogSeq*))
+  (setq line (vl-prin1-to-string
+    (list *OCS:LogSeq* (OCS:logVar "MILLISECS") event *OCS:Stage* data)))
+  (setq *OCS:LogTail* (append *OCS:LogTail* (list line)))
+  (if (> (length *OCS:LogTail*) 40) (setq *OCS:LogTail* (cdr *OCS:LogTail*)))
+  (if (and *OCS:LogPath* (not *OCS:LogError*))
+    (progn
+      (setq problem (vl-catch-all-apply 'OCS:logWriteLine (list line)))
+      (if (vl-catch-all-error-p problem)
+        (setq problem (vl-catch-all-error-message problem)))
+      (if problem (setq *OCS:LogError* problem))))
+  nil
+)
+
+(defun OCS:trace (event data / result)
+  (if *OCS:TraceActive*
+    (progn
+      (setq result (vl-catch-all-apply 'OCS:traceBody (list event data)))
+      (if (vl-catch-all-error-p result)
+        (setq *OCS:LogError* (vl-catch-all-error-message result)))))
+  nil
+)
+
+(defun OCS:setStage (stage)
+  (setq *OCS:Stage* stage)
+  (OCS:trace "STAGE" stage)
+  stage
+)
+
+(defun OCS:logStartBody ( / dirs dir stamp day path index fd result name value)
+  (setq dirs (list (OCS:logVar "TEMPPREFIX") (getenv "TEMP") (OCS:logVar "DWGPREFIX")))
+  (setq stamp (OCS:logVar "CDATE"))
+  (setq stamp (if (numberp stamp) (rtos stamp 2 8) "unknown-date"))
+  (setq day (if (= stamp "unknown-date") stamp
+    (strcat (substr stamp 1 4) "-" (substr stamp 5 2) "-" (substr stamp 7 2))))
+  (foreach dir dirs
+    (if (and (not *OCS:LogPath*) (OCS:stringp dir) (> (strlen dir) 0))
+      (progn
+        (if (not (member (substr dir (strlen dir) 1) (list "/" "\\")))
+          (setq dir (strcat dir "/")))
+        (setq index 0 path (strcat dir "YJST-" stamp ".log"))
+        ;; 不使用 mktemp：其生成的文件会在 CAD 退出时被自动删除。
+        (while (findfile path)
+          (setq index (1+ index) path (strcat dir "YJST-" stamp "-" (itoa index) ".log")))
+        (setq *OCS:LogEncoding* "UTF-8")
+        (setq fd (vl-catch-all-apply 'open (list path "w" "utf8")))
+        ;; 旧 AutoLISP 不接受编码参数，沿用引擎文本编码并写入编码标记。
+        (if (or (vl-catch-all-error-p fd) (not fd))
+          (progn
+            (setq *OCS:LogEncoding* "CAD-legacy")
+            (setq fd (vl-catch-all-apply 'open (list path "w")))))
+        (if (and (not (vl-catch-all-error-p fd)) fd)
+          (progn
+            (setq result (vl-catch-all-apply 'close (list fd)))
+            (if (not (vl-catch-all-error-p result)) (setq *OCS:LogPath* path)))))))
+  (if (not *OCS:LogPath*) (setq *OCS:LogError* "日志目录不可写，仅保留最近 40 条内存记录"))
+  (OCS:trace "RUN_BEGIN" (list "version" *OCS:Version* "date" day "cdate" stamp "encoding" *OCS:LogEncoding*))
+  (foreach name (list "ACADVER" "PRODUCT" "PLATFORM" "LISPSYS" "DWGPREFIX" "DWGNAME" "DWGTITLED" "UNDOCTL")
+    (setq value (OCS:logVar name))
+    (OCS:trace "ENV" (list name value)))
+  (princ (if *OCS:LogPath* (strcat "\n排查日志：" *OCS:LogPath*) "\n排查日志无法落盘，运行后输入 YJSTLOG 查看记录。"))
+)
+
+(defun OCS:logStart ( / result)
+  (setq *OCS:LogPath* nil *OCS:LogError* nil *OCS:LogEncoding* nil
+        *OCS:LogTail* nil *OCS:LogSeq* 0 *OCS:TraceActive* T *OCS:Stage* "初始化日志")
+  (setq result (vl-catch-all-apply 'OCS:logStartBody nil))
+  (if (vl-catch-all-error-p result)
+    (progn
+      (setq *OCS:LogError* (vl-catch-all-error-message result))
+      (princ "\n日志初始化失败，运行后输入 YJSTLOG 查看记录。")))
+  nil
+)
+
+(defun c:YJSTLOG ( / line)
+  (if *OCS:LogPath* (princ (strcat "\n最近一次排查日志：" *OCS:LogPath*))
+    (princ "\n最近一次运行没有可用日志文件。"))
+  (if *OCS:LogError*
+    (progn
+      (princ (strcat "\n日志写入异常：" *OCS:LogError* "；以下为最近 40 条内存记录："))
+      (foreach line *OCS:LogTail* (princ (strcat "\n" line)))))
+  (princ)
+)
+
+;; 调用参数只记录短标量和类型，避免把长篇图纸正文或 COM 对象展开到日志。
+(defun OCS:logArgs (args / out value)
+  (setq out nil)
+  (foreach value args
+    (setq out (cons
+      (cond ((OCS:stringp value)
+             (if (> (strlen value) 160) (strcat "<text-length=" (itoa (strlen value)) ">") value))
+            ((or (numberp value) (null value) (equal (type value) 'SYM)) value)
+            (T (strcat "<" (vl-symbol-name (type value)) ">"))) out)))
+  (reverse out)
+)
+
+(defun OCS:tracedCall (fn args / result detail)
+  (if *OCS:TraceActive*
+    (progn
+      (setq detail (vl-catch-all-apply 'OCS:logArgs (list args)))
+      (if (vl-catch-all-error-p detail) (setq detail "<参数摘要不可用>"))
+      (OCS:trace "CALL_BEGIN" (list (vl-symbol-name fn) detail))))
+  (setq result (vl-catch-all-apply fn args))
+  (if (vl-catch-all-error-p result)
+    (OCS:trace "CALL_ERROR" (list (vl-symbol-name fn) (vl-catch-all-error-message result)))
+    (OCS:trace "CALL_OK" (vl-symbol-name fn)))
+  result
+)
+
 ;;; ------------------------- 小工具 -------------------------
 
 ;; 字符串包含
-(defun OCS:strContains (s sub / ls lsub)
+(defun OCS:strContains (s sub / ls lsub i result)
   (setq ls (strlen s) lsub (strlen sub))
   (if (or (= lsub 0) (< ls lsub))
     (= s sub)
@@ -176,14 +319,25 @@
 )
 
 ;; 关联列表取值（无则默认）
-(defun OCS:assocd (key lst default / i n)
-  ;; 扁平 plist (K V K V ...) 取值：逐元素找等于 key 的位置，返回其后一个。
-  ;; 同 putPair，遇到 list 元素（如 problem 三元组）原样跳过，不影响步进。
-  (setq i 0 n (length lst))
-  (while (and (< i n) (not (equal (nth i lst) key)))
-    (setq i (1+ i))
+(defun OCS:assocd (key lst default / pair found value)
+  ;; 数字键只用于 DXF 点对；业务数据使用字符串键的扁平 plist。
+  (if (numberp key)
+    (if (setq pair (assoc key lst)) (cdr pair) default)
+    (progn
+      (setq found nil value default)
+      (while (and lst (not found))
+        (if (OCS:consp (car lst))
+          (setq lst (cdr lst)) ; 跳过 problem 三元组
+          (progn
+            (if (and (equal (car lst) key) (cdr lst))
+              (setq found T value (cadr lst)))
+            (setq lst (cdr (cdr lst)))
+          )
+        )
+      )
+      value
+    )
   )
-  (if (and (< i n) (< (1+ i) n)) (nth (1+ i) lst) default)
 )
 
 ;; 注意：不使用 defmacro / 反引号宏。部分 CAD 引擎不把 defmacro 当特殊形式，
@@ -211,7 +365,7 @@
 ;; 读取字段范围 %< ... >%（支持转义与嵌套 %< >%），返回 (新位置 结束位置)
 ;; 若字段未闭合，记录 UNTERMINATED_FIELD 并把位置推到串尾。
 (defun OCS:scanField (s i len st / depth c j closed)
-  (setq j (1+ i) depth 1 closed nil)
+  (setq j (+ i 2) depth 1 closed nil)
   (while (and (<= j len) (not closed))
     (setq c (substr s j 1))
     (cond
@@ -236,9 +390,9 @@
 )
 
 ;; 读取字体描述至 ;（识别转义与嵌套花括号），返回 (描述 结束后位置 err)
-(defun OCS:readFontDesc (s i len / j c depth buf err)
-  (setq j i depth 0 buf "" err nil)
-  (while (and (<= j len) (not err))
+(defun OCS:readFontDesc (s i len / j c depth buf err closed)
+  (setq j i depth 0 buf "" err nil closed nil)
+  (while (and (<= j len) (not err) (not closed))
     (setq c (substr s j 1))
     (cond
       ((= c "\\")
@@ -254,7 +408,7 @@
        ))
       ((= c ";")
        (if (= depth 0)
-         (setq j (1+ j))                       ; 结束
+         (setq closed T j (1+ j))              ; 遇到分号立即结束
          (progn (setq buf (strcat buf c) j (1+ j)))
        ))
       (T (setq buf (strcat buf c) j (1+ j)))
@@ -263,7 +417,7 @@
   (if (and (not err) (> depth 0))
     (setq err "字体描述中花括号未闭合")
   )
-  (if (and (not err) (not (OCS:strEndsWithChar (OCS:chompDesc buf) ";")))
+  (if (and (not err) (not closed))
     ;; 循环退出但没遇到 ';'：说明串已耗尽
     (setq err "字体指令不完整（缺少分号）")
   )
@@ -296,8 +450,8 @@
         (setq out (append out (list (substr desc start (- i start)))))
         (setq start (1+ i))
       )
-      (setq i (1+ i))
     )
+    (setq i (1+ i))
   )
   (setq out (append out (list (substr desc start (1+ (- (strlen desc) start))))))
   out
@@ -305,7 +459,7 @@
 
 ;; 应用目标字体规则：保留 b/i，重写 charset 与 pitch/family（若描述中已带）
 ;; 返回新描述（无 ;）
-(defun OCS:applyFamily (desc family target / parts out head p kv)
+(defun OCS:applyFamily (desc family target / parts out head p kv first)
   (setq parts (OCS:splitDesc desc) out nil head nil)
   (foreach p parts
     (cond
@@ -361,8 +515,7 @@
   (setq found nil)
   (foreach p lst
     (if (and (not found) (> (strlen p) 0)
-             (= (substr p 1 1) prefix)
-             (or (= prefix "c") (= prefix "p")))
+             (= (substr p 1 (strlen prefix)) prefix))
       (setq found T)
     )
   )
@@ -381,12 +534,12 @@
 )
 
 ;; 目标字体参数（S01 结果通过 *OCS:FontTarget* 注入；缺省为已验证的
-;; SimSun 规则：charset=134，pitch/family=36(0x24)=VARIABLE_PITCH|FF_ROMAN|TMPF_TRUETYPE）
+;; SimSun 规则：charset=134，pitch/family=22(0x16)=2|16|4）
 (defun OCS:targetCharSet (target)
   (OCS:assocd "charSet" target 134)
 )
 (defun OCS:targetPitchFamily (target)
-  (OCS:assocd "pitchFamily" target 36)
+  (OCS:assocd "pitchFamily" target 22)
 )
 (defun OCS:targetAppendParams (target)
   (OCS:assocd "appendParams" target T)
@@ -416,7 +569,7 @@
   (= (OCS:lower a) (OCS:lower b))
 )
 
-(defun OCS:lower (s / out i ch up lo)
+(defun OCS:lower (s / out i ch up lo p)
   (setq up "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
         lo "abcdefghijklmnopqrstuvwxyz"
         out "" i 1)
@@ -460,10 +613,7 @@
           ;; 转义序列（\\、\{、\}、\; 等）：整体原样输出，不作为格式开关
           ;; 注意顺序：先判断转义，再判断 \f/\F（\f 也是合法转义之一，
           ;; 但作为格式指令时其后是描述文本，不会整体走转义分支）
-          ((and (= c "\\") (< i len) (OCS:isEscapable (substr s (1+ i) 1))
-                (not (and (or (= (substr s (1+ i) 1) "f")
-                              (= (substr s (1+ i) 1) "F"))
-                          (not (OCS:alphaChar (substr s (+ i 2) 1))))))
+          ((and (= c "\\") (< i len) (OCS:isEscapable (substr s (1+ i) 1)))
            (setq out (strcat out c (substr s (1+ i) 1)))
            (setq i (+ i 2))
           )
@@ -471,13 +621,12 @@
           ((and (= c "%") (< i len) (= (substr s (1+ i) 1) "<"))
            (setq next (OCS:scanFieldEnd s i len))
            (setq st (OCS:scanFieldSt s i len st))
-           (setq out (strcat out (substr s i (1+ (- next i)))))
+           (setq out (strcat out (substr s i (- next i))))
            (setq i next)
           )
-          ;; 字体切换指令 \f / \F（后随字符不能是字母，防止误匹配）
+          ;; 字体名称可以以英文字母开头，如 Arial。
           ((and (= c "\\") (< i len)
-                (or (= (substr s (1+ i) 1) "f") (= (substr s (1+ i) 1) "F"))
-                (not (OCS:alphaChar (substr s (+ i 2) 1))))
+                (or (= (substr s (1+ i) 1) "f") (= (substr s (1+ i) 1) "F")))
            (setq r (OCS:readFontDesc s (+ i 2) len))
            (setq desc (car r) endp (cadr r) err (caddr r))
            (if err
@@ -518,7 +667,7 @@
   )
 )
 
-;; 字体指令边界：\f 后随字符不能是字母（防止把 \fx 之类当字体指令）
+;; 字母判断工具（字体名称允许英文字母开头）
 (defun OCS:alphaChar (ch)
   (and (= (strlen ch) 1)
        (or (and (>= ch "a") (<= ch "z"))
@@ -537,7 +686,7 @@
 ;; 计算字段 %< ... >% 的结束位置：返回“下一扫描位置”（1-based，字段之后）
 ;; 若未闭合，返回 (1+ len)
 (defun OCS:scanFieldEnd (s i len / depth c j closed)
-  (setq j (1+ i) depth 1 closed nil)
+  (setq j (+ i 2) depth 1 closed nil)
   (while (and (<= j len) (not closed))
     (setq c (substr s j 1))
     (cond
@@ -555,7 +704,7 @@
 
 ;; 带状态版本的字段扫描
 (defun OCS:scanFieldSt (s i len st / depth c j closed)
-  (setq j (1+ i) depth 1 closed nil)
+  (setq j (+ i 2) depth 1 closed nil)
   (while (and (<= j len) (not closed))
     (setq c (substr s j 1))
     (cond
@@ -582,7 +731,7 @@
 )
 
 ;; 重写字体描述：替换族名，保留 b/i，按目标覆盖/追加 c、pf
-(defun OCS:rewriteDesc (desc target / parts out first p fam)
+(defun OCS:rewriteDesc (desc target / parts out first p fam kv)
   (setq parts (OCS:splitDesc desc) out nil first T fam nil)
   (foreach p parts
     (cond
@@ -627,7 +776,7 @@
 ;; 4) 任一失败 → 在业务写入之前退出。
 (defun OCS:ResolveSongFont ( / f res )
   ;; 扁平 plist（与 makeReport 一致）
-  (setq res (list "ok" nil "family" "SimSun" "charSet" 134 "pitchFamily" 36
+  (setq res (list "ok" nil "family" "SimSun" "charSet" 134 "pitchFamily" 22
                   "fontFile" nil "fontFileSource" nil "bigFontEmpty" nil
                   "problems" nil "appendParams" T))
   ;; 候选字体文件（顺序即优先级；不接受 NSimSun/SimHei/STSong 顶替）
@@ -642,38 +791,37 @@
     )
   )
   ;; 试验样式写入验证
-  (setq res (OCS:verifyFontWrite res))
+  (setq res (OCS:putPair res "ok" (not (OCS:hasError res))))
   res
 )
 
 (defun OCS:addProblem (res level msg)
   (append res (list (list "problem" level msg)))
 )
-(defun OCS:putPair (res key val / out done i n item)
-  ;; 扁平 plist 设值：逐元素找等于 key 的位置，替换其后一个元素；
-  ;; 中途遇到 list 元素（如 problem 三元组）原样保留，不打乱 plist 步进。
-  (setq out nil done nil i 0 n (length res))
-  (while (< i n)
-    (setq item (nth i res))
+(defun OCS:putPair (res key val / out done item)
+  (setq out nil done nil)
+  (while res
+    (setq item (car res))
     (cond
+      ((OCS:consp item)
+       (setq out (append out (list item)) res (cdr res)))
       ((and (not done) (equal item key))
        (setq out (append out (list key val)))
        (setq done T)
-       (setq i (1+ i))
-       (if (< i n) (setq i (1+ i)))
+       (setq res (cdr (cdr res)))
       )
       (T
-       (setq out (append out (list item)))
-       (setq i (1+ i))
+       (setq out (append out (list item (cadr res))))
+       (setq res (cdr (cdr res)))
       )
     )
   )
   (if (not done) (setq out (append out (list key val))))
   out
 )
-(defun OCS:getVal (res key / i n)
-  ;; 扁平 plist 取值（与 assocd 一致）：按位置 2 步进找键，返回其后一个元素
-  (OCS:assocd key res nil)
+(defun OCS:getVal (res key default / i n)
+  ;; 固定三个参数：所有调用显式传入缺省值。
+  (OCS:assocd key res default)
 )
 
 (defun OCS:findSimSunFile ( / winDir f)
@@ -690,105 +838,137 @@
   )
 )
 
-;; 字体文件来源：优先写入可被目标 CAD 解析的标识（文件名），
-;; 若名称解析失败回退到绝对路径（仅作为最后手段并在报告中记录）。
+;; 字体文件来源：用于报告的原始名称；写入时优先使用 findfile 解析路径。
 (defun OCS:fontFileSource ( pair )
   (if (OCS:consp pair) (cadr pair) pair)
 )
 
-;; 在临时样式上验证写入/读回
-(defun OCS:verifyFontWrite (res / doc name ent o r f bf old1071 newent)
-  (setq doc (OCS:activeDoc))
-  (if (not doc)
-    (setq res (OCS:addProblem res "error" "无法获取活动文档（ActiveX 不可用）"))
-    (progn
-      (setq name (OCS:tempStyleName))
-      (OCS:deleteStyleIfExists name)
-      ;; 用 entmake 创建试验文字样式（vla-AddTextStyle 在目标引擎不可用，实测函数错误）
-      (setq newent (list
-        (cons 0 "STYLE")
-        (cons 100 "AcDbSymbolTableRecord")
-        (cons 100 "AcDbTextStyleTableRecord")
-        (cons 2 name)
-        (cons 70 0)
-        (cons 40 0.0)
-        (cons 41 1.0)
-        (cons 50 0.0)
-        (cons 71 0)
-        (cons 42 0.2)
-        (cons 3 (OCS:styleBaseFont))
-        (cons 4 "")))
-      (setq r (vl-catch-all-apply 'entmake (list newent)))
-      (if (vl-catch-all-error-p r)
-        (setq res (OCS:addProblem res "error"
-                    (strcat "创建试验文字样式失败：" (vl-catch-all-error-message r))))
-        (progn
-          (setq ent (tblobjname "STYLE" name))
-          (if (not ent)
-            (setq res (OCS:addProblem res "error" "试验文字样式创建后未找到 STYLE 记录"))
+;;; 日期：2026-10-13。试写和正式写入共用；接口成功必须再核对实际读回。
+(defun OCS:songFontFileP (file)
+  (and (OCS:stringp file) (> (strlen file) 0)
+       (= (strcase (vl-filename-base file)) "SIMSUN")
+       (member (strcase (vl-filename-extension file)) (list ".TTC" ".TTF")))
+)
+
+(defun OCS:fontState (obj phase / state data)
+  (setq data (entget (vlax-vla-object->ename obj)))
+  (setq state (list "file" (OCS:requireProp obj 'FontFile)
+                    "font" (OCS:getStyleFont obj)
+                    "dxf3" (OCS:assocd 3 data "") "dxf4" (OCS:assocd 4 data "")
+                    "acadXdata" (assoc -3 (entget (vlax-vla-object->ename obj) '("ACAD")))))
+  (setq state (OCS:putPair state "bindingMode" (OCS:fontBindingMode state)))
+  (OCS:trace "FONT_STATE" (list "phase" phase "style" (OCS:safeProp obj 'Name) "state" state))
+  state
+)
+
+;; 日期：2026-10-13。TTC 可由 SetFont 描述符绑定，此时两处文件名均为空。
+;; 只允许两处均为宋体文件或均为空；非空错误文件和接口不一致仍拒绝。
+(defun OCS:fontBindingMode (state / file dxf)
+  (setq file (OCS:assocd "file" state nil) dxf (OCS:assocd "dxf3" state nil))
+  (cond
+    ((and (OCS:songFontFileP file) (OCS:songFontFileP dxf)) "file")
+    ((and (equal file "") (equal dxf "")) "typeface")
+    (T nil))
+)
+
+(defun OCS:fontStateMatches (state bold italic / font family)
+  (setq font (OCS:assocd "font" state nil) family (OCS:assocd "family" font ""))
+  (and (OCS:fontBindingMode state)
+       (OCS:stringp family) (OCS:isTargetFamily family nil)
+       (equal bold (OCS:assocd "bold" font nil))
+       (equal italic (OCS:assocd "italic" font nil))
+       (= 134 (OCS:assocd "charSet" font 0))
+       (= 22 (OCS:assocd "pitchFamily" font 0)))
+)
+
+(defun OCS:fontStateStable (expected actual / font)
+  (setq font (OCS:assocd "font" expected nil))
+  (and (OCS:fontStateMatches actual (OCS:assocd "bold" font nil) (OCS:assocd "italic" font nil))
+       (equal (OCS:fontBindingMode expected) (OCS:fontBindingMode actual)))
+)
+
+(defun OCS:writeSongFont (obj spec bold italic / files face faces selected path result state order answer errors preferred ent name)
+  (setq files (OCS:assocd "fontFile" spec nil))
+  (if (not (listp files)) (setq files (list files)))
+  (setq preferred (OCS:assocd "setFontFamily" spec "SimSun"))
+  (setq faces (list preferred (if (= preferred "宋体") "SimSun" "宋体")) answer nil errors nil)
+  ;; 日期：2026-10-13。entmod 会重置部分 CAD 的字体描述符，必须先清大字体。
+  ;; bold/italic 已由调用者在任何写入之前保存；SetFont 后只允许只读核对。
+  (setq ent (vlax-vla-object->ename obj) name (OCS:requireProp obj 'Name))
+  (setq result (OCS:clearBigFont ent name))
+  (if (OCS:errp result)
+    (setq faces nil errors (list (strcat "大字体预清空失败：" (OCS:errmsg result)))))
+  (foreach face faces
+    (if (not answer)
+      (progn
+        (setq selected nil)
+        ;; findfile 解析到的完整路径优先；不再先试现场已失败的裸文件名。
+        (foreach path files
+          (if (and (not selected) (OCS:stringp path) (> (strlen path) 0))
             (progn
-              (setq o (vlax-ename->vla-object ent))
-              ;; FontFile 写入（先文件名）
-              (setq f (OCS:getVal res "fontFile"))
-              (setq bf (if (OCS:consp f) (cadr f) f))
-              (setq r (vl-catch-all-apply 'vla-put-FontFile (list o bf)))
-              (if (vl-catch-all-error-p r)
-                (progn
-                  ;; 名称失败 → 绝对路径
-                  (setq r (vl-catch-all-apply 'vla-put-FontFile (list o (car f))))
-                  (if (vl-catch-all-error-p r)
-                    (setq res (OCS:addProblem res "error"
-                      (strcat "FontFile 写入失败：" (vl-catch-all-error-message r))))
-                    (progn
-                      (setq res (OCS:putPair res "fontFileSource" (strcat (car f) " (绝对路径回退)")))
-                    ))
-                )
-              )
-              ;; SetFont（字体族名 + 字符集 + pitch/family）
-              (if (not (OCS:hasError res))
-                (progn
-                  (setq r (vl-catch-all-apply 'vla-SetFont
-                    (list o "SimSun" "vlax-false" "vlax-false"
-                          (OCS:getVal res "charSet")
-                          (OCS:getVal res "pitchFamily"))))
-                  (if (vl-catch-all-error-p r)
-                    (setq res (OCS:addProblem res "error"
-                      (strcat "SetFont(SimSun) 失败：" (vl-catch-all-error-message r))))
-                  )
-                )
-              )
-              ;; 写入后立即读回验证：FontFile 与 LastFontFile
-              (if (not (OCS:hasError res))
-                (progn
-                  (setq r (vl-catch-all-apply 'vla-get-FontFile (list o)))
-                  (if (or (vl-catch-all-error-p r) (= r ""))
-                    (setq res (OCS:addProblem res "error" "FontFile 读回为空，字体未被 CAD 解析"))
-                    (setq res (OCS:putPair res "fontFileReadback" r))
-                  )
-                )
-              )
-              ;; 大字体清空验证（STYLE DXF 组码 4）
-              (if (not (OCS:hasError res))
-                (setq res (OCS:verifyBigFontClear res ent name))
-              )
-              ;; 记录写入顺序证据
-              (setq res (OCS:putPair res "writeOrder" "FontFile → SetFont → 大字体清空(组码4) → 读回"))
-              ;; 删除试验样式
-              (OCS:deleteStyleIfExists name)
-            )
-          )
-        )
-      )
-    )
-  )
-  res
+              (setq result (OCS:writeCall 'vla-put-FontFile (list obj path)))
+              (if (vl-catch-all-error-p result)
+                (setq errors (cons (vl-catch-all-error-message result) errors))
+                (setq selected path)))))
+        (if selected
+          (progn
+            (OCS:fontState obj "after-FontFile")
+            (setq result (OCS:writeCall 'vla-SetFont (list obj face bold italic 134 22)))
+            (if (vl-catch-all-error-p result)
+              (setq errors (cons (vl-catch-all-error-message result) errors))
+              (progn
+                (setq state (OCS:fontState obj "after-SetFont") order "clearBigFont -> FontFile -> SetFont")
+                ;; 不再重写 FontFile：现场证据显示这会清空已正确解析的宋体描述符。
+                (if (and (not (vl-catch-all-error-p result)) (OCS:fontStateMatches state bold italic))
+                  (setq answer (list "ok" T "setFontFamily" face "fontFileApplied" selected "writeOrder" order "state" state))
+                  (setq errors (cons (strcat face "：字体文件、字体族、字符集或粗斜体读回不匹配") errors))))))))))
+  (if answer
+    (progn
+      (setq result (OCS:checkBigFontEmpty ent name))
+      (if (OCS:errp result)
+        (setq answer nil errors (cons (strcat "设置宋体后大字体校验失败：" (OCS:errmsg result)) errors)))))
+  (if (not answer)
+    (setq answer (list "ok" nil "error" (strcat "宋体写入读回失败：" (OCS:fmt (reverse errors))))))
+  (OCS:trace "FONT_WRITE_RESULT" answer)
+  answer
+)
+
+;; 在临时样式上验证写入/读回
+(defun OCS:probeFontBody (res name / ent obj created writeResult key expected)
+  (setq created (OCS:writeCall 'entmake
+    (list (list (cons 0 "STYLE") (cons 100 "AcDbSymbolTableRecord")
+      (cons 100 "AcDbTextStyleTableRecord") (cons 2 name) (cons 70 0)
+      (cons 40 0.0) (cons 41 1.0) (cons 50 0.0) (cons 71 0) (cons 42 0.2)
+      (cons 3 (OCS:styleBaseFont)) (cons 4 "")))))
+  (setq ent (tblobjname "STYLE" name))
+  (if (or (vl-catch-all-error-p created) (not ent))
+    (OCS:addProblem res "error" "创建试验文字样式失败")
+    (progn
+      (setq *OCS:Wrote* T obj (vlax-ename->vla-object ent))
+      (setq writeResult (OCS:writeSongFont obj res :vlax-false :vlax-false))
+      (if (not (OCS:assocd "ok" writeResult nil))
+        (setq res (OCS:addProblem res "error" (OCS:assocd "error" writeResult "宋体试写失败")))
+        (progn
+          (foreach key (list "setFontFamily" "fontFileApplied" "writeOrder")
+            (setq res (OCS:putPair res key (OCS:assocd key writeResult nil))))
+          (setq res (OCS:verifyBigFontClear res ent name))
+          (setq expected (OCS:assocd "state" writeResult nil))
+          (if (not (OCS:fontStateStable expected (OCS:fontState obj "probe-after-check")))
+            (setq res (OCS:addProblem res "error" "临时样式只读复核后宋体绑定不匹配")))
+          (if (not (OCS:hasError res))
+            (progn
+              (OCS:mustCall 'vla-Regen (list (OCS:activeDoc) 1))
+              (if (not (OCS:fontStateStable expected (OCS:fontState obj "probe-after-regen")))
+                (setq res (OCS:addProblem res "error" "临时样式再生后宋体绑定读回不匹配")))))))
+      ;; 清理由 verifyFontWrite 的统一出口执行。
+      res))
 )
 
 (defun OCS:hasError (res / p)
   ;; 扫描列表中是否有 error 级 problem（foreach+consp，避免 assoc 对扁平裸字符串报错）
   (OCS:findError res)
 )
-(defun OCS:findError (res / found)
+(defun OCS:findError (res / found item)
   (setq found nil)
   (foreach item res
     (if (and (OCS:consp item) (equal (car item) "problem")
@@ -800,7 +980,14 @@
 )
 
 (defun OCS:tempStyleName ()
-  "OCS_TMP_VERIFY_STYLE"
+  (OCS:unusedStyleName "OCS_TMP_VERIFY_STYLE" 0)
+)
+
+(defun OCS:unusedStyleName (prefix index / name)
+  (setq name (strcat prefix "_" (itoa index)))
+  (while (tblobjname "STYLE" name)
+    (setq index (1+ index) name (strcat prefix "_" (itoa index))))
+  name
 )
 
 (defun OCS:styleBaseFont ()
@@ -811,38 +998,23 @@
 (defun OCS:deleteStyleIfExists (name / ent)
   (setq ent (tblobjname "STYLE" name))
   (if ent
-    (vl-catch-all-apply 'entdel (list ent))
+    (vla-Delete (vlax-ename->vla-object ent))
   )
 )
 
-;; 大字体清空验证：按方案“通过 tblobjname + entget 定位 STYLE，
-;; 将 DXF 组码 4 设为空，再用 entmod 写回；顺序与读回由 S01 验证”
-(defun OCS:verifyBigFontClear (res ent name / e r v4)
-  ;; 先写入一个大字体，确保组码 4 存在
-  (setq e (entget ent))
-  (setq r (OCS:ensureBigFont4 e "hz.shx"))
-  (setq e (entget ent))
-  (setq r (OCS:substDxf4 "" e))
+;; 日期：2026-10-13。写入由 writeSongFont 前置清理完成，此处只读。
+(defun OCS:verifyBigFontClear (res ent name / r)
+  (setq r (OCS:checkBigFontEmpty ent name))
   (if (OCS:errp r)
     (setq res (OCS:addProblem res "error"
-                (strcat "大字体清空（DXF 组码 4 + entmod）失败：" (OCS:errmsg r))))
-    (progn
-      (setq e (entget (tblobjname "STYLE" name)))
-      (setq v4 (OCS:assocd 4 e "MISSING"))
-      (if (or (= v4 "MISSING") (= v4 ""))
-        ;; 组码 4 已清空：再读回 COM 属性确认
-        (setq res (OCS:putPair res "bigFontEmpty" T))
-        (setq res (OCS:addProblem res "error"
-                    (strcat "大字体清空后组码 4 读回非空：" v4)))
-      )
-    )
-  )
+                (strcat "大字体只读校验失败：" (OCS:errmsg r))))
+    (setq res (OCS:putPair res "bigFontEmpty" T)))
   res
 )
 
 (defun OCS:ensureBigFont4 (e val / o r)
   (setq o (vlax-ename->vla-object (cdr (assoc -1 e))))
-  (setq r (vl-catch-all-apply 'vla-put-BigFontFile (list o val)))
+  (setq r (OCS:writeCall 'vla-put-BigFontFile (list o val)))
   (if (vl-catch-all-error-p r)
     ;; 文档不允许空字符串，但允许非空；写入失败则用 entmod 补组码 4
     (vl-catch-all-apply 'entmod (list (OCS:substDxf4 val e)))
@@ -851,7 +1023,7 @@
 )
 
 ;; 替换组码 4（无则追加），返回新 entlist；entmod 错误以 (:error . msg) 表示
-(defun OCS:substDxf4 (val e / out found r)
+(defun OCS:substDxf4 (val e / out found r pair)
   (setq out nil found nil)
   (foreach pair e
     (if (= (car pair) 4)
@@ -865,7 +1037,7 @@
   (if (not found)
     (setq out (append out (list (cons 4 val))))
   )
-  (setq r (vl-catch-all-apply 'entmod (list out)))
+  (setq r (OCS:writeCall 'entmod (list out)))
   (if (vl-catch-all-error-p r)
     (cons "error" (vl-catch-all-error-message r))
     (if (null r) (cons "error" "entmod 返回 nil") out)
@@ -893,11 +1065,13 @@
   (if (= 0 (logand undoctl 1))
     (setq res (OCS:addProblem res "error" "图纸撤销（UNDO）不可用，不能保证一次 U 恢复"))
   )
+  (if (/= 0 (logand undoctl 8))
+    (setq res (OCS:addProblem res "error" "已有外部撤销分组，不能保证只撤销本次操作")))
   ;; 3. 文档可写（锁定/只读）
   (setq res (OCS:checkDocWritable res))
   ;; 4. 字体解析
   (setq res (OCS:putPair res "font" (OCS:ResolveSongFont)))
-  (if (OCS:findError (OCS:getVal res "font"))
+  (if (OCS:findError (OCS:getVal res "font" nil))
     (setq res (OCS:addProblem res "error" "宋体字体解析失败（详见 :font）"))
   )
   ;; 5. 关键接口存在性
@@ -914,7 +1088,7 @@
       (setq ro (vl-catch-all-apply 'vla-get-ReadOnly (list doc)))
       ;; 只读降级为警告：部分克隆引擎（天正/浩辰内核）该属性存根恒返 TRUE，
       ;; 若图纸真只读，后续写入会被 vl-catch-all 拦截并走回滚，不会损坏图纸。
-      (if (and (not (vl-catch-all-error-p ro)) ro)
+      (if (and (not (vl-catch-all-error-p ro)) (equal ro :vlax-true))
         (OCS:addProblem res "warn" "文档报告为只读（引擎可能误报；写入失败将自动回滚）")
         res
       )
@@ -955,10 +1129,12 @@
 
 (defun OCS:CollectStyles ( / res ent lst e flg name)
   (setq res (list "normal" nil "shape" nil "xref" nil "vertical" nil "count" 0))
+  (OCS:setStage "读取文字样式表 STYLE")
   (setq ent (tblnext "STYLE" T))
   (while ent
     (setq flg (OCS:assocd 70 ent 0)
           name (OCS:assocd 2 ent ""))
+    (OCS:setStage (strcat "扫描文字样式 " name))
     (cond
       ((/= 0 (logand flg 1))
        ;; 形文件记录（LOAD 请求）→ 跳过并分类记录
@@ -973,15 +1149,17 @@
                   (list "name" name
                         "flags" flg
                         "vertical" (/= 0 (logand flg 4))
-                        "annotative" (OCS:isAnnotativeStyle ent)
+                        "annotative" (OCS:isAnnotativeStyle (tblobjname "STYLE" name))
                         "bigFontBefore" (OCS:assocd 4 ent "")
                         "fontFileBefore" (OCS:assocd 3 ent "")
+                        "before" (OCS:styleSnapshot (tblobjname "STYLE" name))
+                        "fontBefore" (OCS:getStyleFont (vlax-ename->vla-object (tblobjname "STYLE" name)))
                         "dxf" ent)))
       )
     )
     (setq ent (tblnext "STYLE" nil))
   )
-  (setq res (OCS:putPair res "count" (length (OCS:getVal res "normal"))))
+  (setq res (OCS:putPair res "count" (length (OCS:getVal res "normal" nil))))
   res
 )
 
@@ -996,7 +1174,7 @@
   (setq o (vlax-ename->vla-object ent))
   (setq r (vl-catch-all-apply 'vla-get-Annotative (list o)))
   (if (vl-catch-all-error-p r) nil
-    (equal r "vlax-true")
+    (equal r :vlax-true)
   )
 )
 
@@ -1007,7 +1185,7 @@
 ;;; 标注/表格等生成的匿名显示块按来源分类处理。
 ;;; =====================================================================
 
-(defun OCS:CollectHosts ( / res doc blocks i blk)
+(defun OCS:CollectHosts ( / res doc blocks count i blk)
   (setq res (list "blocks" 0 "xrefBlocks" 0 "displayBlocks" 0
                   "entities" 0 "attribs" 0 "unknown" 0
                   "blockList" nil "skipped" nil))
@@ -1015,9 +1193,12 @@
   (if (not doc)
     (OCS:addProblem res "error" "无法获取活动文档")
     (progn
-      (setq blocks (vla-get-Blocks doc))
+      (OCS:setStage "读取图块集合 Blocks")
+      (setq blocks (OCS:requireProp doc 'Blocks)
+            count (OCS:requireProp blocks 'Count))
       (setq i 1)
-      (while (<= i (vla-get-Count blocks))
+      (while (<= i count)
+        (OCS:setStage (strcat "读取图块集合 Blocks，索引 " (itoa (1- i))))
         (setq blk (OCS:safeItem blocks i))
         (if blk
           (setq res (OCS:collectBlock res doc blk))
@@ -1029,23 +1210,23 @@
   )
 )
 
-(defun OCS:safeItem (coll i / r)
-  (setq r (vl-catch-all-apply 'vla-Item (list coll (1- i))))
-  (if (vl-catch-all-error-p r) nil r)
+(defun OCS:safeItem (coll i)
+  (OCS:mustCall 'vla-Item (list coll (1- i)))
 )
 
 (defun OCS:collectBlock (res doc blk / name isXref ownerH handle btype)
-  (setq name (OCS:safeProp blk 'Name)
-        handle (OCS:safeProp blk 'Handle))
+  (setq name (OCS:requireProp blk 'Name)
+        handle (OCS:requireProp blk 'Handle))
   (if (not name)
     res
     (progn
-      (setq isXref (OCS:safeProp blk 'IsXRef))
-      ;; 匿名块分类：动态块表示(*D...)、标注/表格显示缓存(*U...)、其他
+      (OCS:setStage (strcat "扫描图块 " name " [" handle "]"))
+      (setq isXref (OCS:boolProp blk 'IsXRef))
+      ;; 匿名块分类：动态块表示(*U...)、标注/表格显示缓存(*D.../*T...)、其他
       (setq btype (OCS:classifyBlockName name))
       (cond
         ;; 外部参照块：停止进入，不跨外部数据库
-        ((equal isXref "vlax-true")
+        ((or isXref (OCS:strContains name "|"))
          (setq res (OCS:putPair res "xrefBlocks" (1+ (OCS:getVal res "xrefBlocks" 0))))
          (setq res (OCS:lstAppend res "skipped" (list "XREF_BLOCK" handle name)))
         )
@@ -1068,20 +1249,21 @@
 
 ;; 匿名块来源分类（方案第 4 节第 6 条）
 (defun OCS:classifyBlockName (name / n)
-  (setq n (OCS:lower name))
+  (setq n (strcase name))
   (cond
-    ;; 动态块的匿名表示：*D12 这类
-    ((and (>= (strlen n) 2) (= (substr n 1 2) "*d")) "dynamic-repr")
-    ;; 标注/表格等显示缓存：*U12、*X12 这类（U=匿名块，X=…）
-    ((and (>= (strlen n) 2) (= (substr n 1 2) "*u")) "display-cache")
+    ((= (substr n 1 2) "*U") "dynamic-repr")
+    ((or (= (substr n 1 2) "*D") (= (substr n 1 2) "*T")) "display-cache")
     (T "named")
   )
 )
 
-(defun OCS:scanBlockContents (res doc blk bname bhandle / ents i e)
-  (setq ents (vla-get-BlockEntities blk))
-  (setq i 1)
-  (while (<= i (vla-get-Count ents))
+(defun OCS:scanBlockContents (res doc blk bname bhandle / ents count i e label)
+  (setq ents blk) ; Block 本身就是实体集合
+  (setq label (strcat "扫描图块 " bname " [" bhandle "]"))
+  (OCS:setStage label)
+  (setq count (OCS:requireProp ents 'Count) i 1)
+  (while (<= i count)
+    (OCS:setStage (strcat label "，实体索引 " (itoa (1- i))))
     (setq e (OCS:safeItem ents i))
     (if e (setq res (OCS:visitEntity res doc e (list "block" bname bhandle))))
     (setq i (1+ i))
@@ -1098,11 +1280,12 @@
       (setq res (OCS:lstAppend res "skipped" (list "UNKNOWN_OBJECT" "?" (OCS:ctxStr ctx))))
     )
     (progn
-      (setq handle (OCS:safeProp e 'Handle))
+      (setq handle (OCS:requireProp e 'Handle))
       (setq seen (OCS:seenP res handle))
       (if (not seen)
         (progn
           (setq res (OCS:markSeen res handle))
+          (OCS:setStage (strcat "扫描实体 " typ " [" handle "] " (OCS:ctxStr ctx)))
           (setq res (OCS:handleEntity res doc e typ ctx handle))
         )
       )
@@ -1134,6 +1317,7 @@
 ;; 按对象类型分发
 (defun OCS:handleEntity (res doc e typ ctx handle / cls)
   (setq cls (OCS:mapClass typ))
+  (OCS:trace "ENTITY" (list "handle" handle "type" typ "class" cls "context" ctx "layer" (OCS:safeProp e 'Layer)))
   (cond
     ((equal cls "text")     (OCS:collectTextHost res doc e ctx handle typ))
     ((equal cls "mtext")    (OCS:collectTextHost res doc e ctx handle typ))
@@ -1151,6 +1335,7 @@
      (if (OCS:isUnknownClass typ)
        (progn
          (setq res (OCS:putPair res "unknown" (1+ (OCS:getVal res "unknown" 0))))
+         (OCS:trace "UNSUPPORTED_OBJECT" (list handle typ ctx))
          (setq res (OCS:lstAppend res "skipped"
                       (list "PROXY_OR_PRO" handle (strcat typ "@" (OCS:ctxStr ctx)))))
        )
@@ -1161,33 +1346,36 @@
 )
 
 (defun OCS:isUnknownClass (typ)
-  (or (OCS:strContains typ "Proxy")
-      (OCS:strContains typ "ACAD_PROXY")
-      (and (OCS:strContains typ "AcDb")
-           (not (OCS:knownClass typ)))
-  )
+  (not (OCS:knownClass typ))
 )
 
 (defun OCS:knownClass (typ)
-  (OCS:strContains typ "Text")
+  (or (/= (OCS:mapClass typ) "other")
+      (member (strcase typ)
+        (list "ACDBLINE" "ACDBARC" "ACDBCIRCLE" "ACDBELLIPSE" "ACDBSPLINE"
+              "ACDBPOLYLINE" "ACDB2DPOLYLINE" "ACDB3DPOLYLINE" "ACDBPOINT"
+              "ACDBHATCH" "ACDBSOLID" "ACDB3DSOLID" "ACDBFACE" "ACDBTRACE"
+              "ACDBRAY" "ACDBXLINE" "ACDBREGION" "ACDBVIEWPORT" "ACDBMLINE"
+              "ACDBRASTERIMAGE" "ACDBWIPEOUT" "ACDBOLE2FRAME" "ACDBPDFREFERENCE")))
 )
 
 ;; 类型 → 分类（DXF/ObjectName 映射）
-(defun OCS:mapClass (typ / t)
-  (setq t (OCS:lower typ))
+(defun OCS:mapClass (typ / clsName)
+  (setq clsName (OCS:lower typ))
   (cond
-    ((or (= t "acad_text")   (= t "acdbtext"))          "text")
-    ((or (= t "acad_mtext")  (= t "acdbmtext"))         "mtext")
-    ((or (= t "acad_attribute") (= t "acdbattribute"))  "attrib")
-    ((or (= t "acad_attributereference") (= t "acdbattributereference")) "attrib")
-    ((or (= t "acad_attributedefinition") (= t "acdbattributedefinition")) "attdef")
-    ((OCS:strContains t "dimension")                    "dim")
-    ((OCS:strContains t "mleader")                      "mleader")
-    ((OCS:strContains t "leader")                       "leader")
-    ((OCS:strContains t "table")                        "table")
-    ((OCS:strContains t "tolerance")                    "tolerance")
-    ((or (= t "acad_blockreference") (= t "acdbblockreference")) "blockref")
-    ((OCS:strContains t "wblock")                       "blockref")
+    ((or (= clsName "acad_text")   (= clsName "acdbtext"))          "text")
+    ((or (= clsName "acad_mtext")  (= clsName "acdbmtext"))         "mtext")
+    ((or (= clsName "acad_attribute") (= clsName "acdbattribute"))  "attrib")
+    ((or (= clsName "acad_attributereference") (= clsName "acdbattributereference")) "attrib")
+    ((or (= clsName "acad_attributedefinition") (= clsName "acdbattributedefinition")) "attdef")
+    ((OCS:strContains clsName "dimension")                    "dim")
+    ;; 专业对象名称含 Leader 不代表具备普通引线接口，必须匹配原生类名。
+    ((member clsName (list "acdbmleader" "acad_mleader"))      "mleader")
+    ((member clsName (list "acdbleader" "acad_leader"))       "leader")
+    ((OCS:strContains clsName "table")                        "table")
+    ((OCS:strContains clsName "tolerance")                    "tolerance")
+    ((or (= clsName "acad_blockreference") (= clsName "acdbblockreference")) "blockref")
+    ((OCS:strContains clsName "wblock")                       "blockref")
     (T "other")
   )
 )
@@ -1196,12 +1384,10 @@
 ;;; 各宿主“读”：收集进计划（只读阶段）
 ;;; ---------------------------------------------------------------------
 
-(defun OCS:collectTextHost (res doc e ctx handle typ / s r)
+(defun OCS:collectTextHost (res doc e ctx handle typ)
   (setq res (OCS:putPair res "entities" (1+ (OCS:getVal res "entities" 0))))
-  (setq res (OCS:lstAppend res "hosts"
-              (list "kind" (if (= (OCS:lower typ) "acdbmtext") "mtext" "text")
-                    "obj" e "handle" handle "ctx" ctx "type" typ)))
-  res
+  (OCS:lstAppend res "hosts"
+    (list "kind" (OCS:mapClass typ) "obj" e "handle" handle "ctx" ctx "type" typ))
 )
 
 (defun OCS:collectAttrib (res doc e ctx handle typ / isAttdef)
@@ -1222,9 +1408,9 @@
     (list "kind" "mleader" "obj" e "handle" handle "ctx" ctx "type" typ))
 )
 
-(defun OCS:collectLeader (res doc e ctx handle typ)
-  (OCS:lstAppend res "hosts"
-    (list "kind" "leader" "obj" e "handle" handle "ctx" ctx "type" typ))
+(defun OCS:collectLeader (res doc e ctx handle typ / ann)
+  (setq ann (OCS:requireProp e 'Annotation))
+  (if ann (OCS:visitEntity res doc ann ctx) res)
 )
 
 (defun OCS:collectTable (res doc e ctx handle typ)
@@ -1238,23 +1424,19 @@
 )
 
 ;; 块引用：额外处理属性实例（GetAttributes / GetConstantAttributes）
-(defun OCS:collectBlockRef (res doc e ctx handle typ / attrs consts)
-  (setq res (OCS:putPair res "entities" (1+ (OCS:getVal res "entities" 0))))
-  (setq res (OCS:lstAppend res "hosts"
-              (list "kind" "blockref" "obj" e "handle" handle "ctx" ctx "type" typ)))
-  ;; 属性实例
-  (setq attrs (vl-catch-all-apply 'vla-GetAttributes (list e)))
-  (if (and (not (vl-catch-all-error-p attrs)) attrs)
-    (foreach a (OCS:variantToList attrs)
-      (setq res (OCS:collectAttrib res doc a ctx (OCS:safeProp a 'Handle)
-                                    (OCS:safeProp a 'ObjectName)))
-    )
-  )
-  (setq consts (vl-catch-all-apply 'vla-GetConstantAttributes (list e)))
-  (if (and (not (vl-catch-all-error-p consts)) consts)
-    (foreach a (OCS:variantToList consts)
-      (setq res (OCS:collectAttrib res doc a ctx (OCS:safeProp a 'Handle)
-                                    (OCS:safeProp a 'ObjectName)))
+(defun OCS:collectBlockRef (res doc e ctx handle typ / blk name has attrs a meth label)
+  (setq name (OCS:requireProp e 'Name))
+  (setq label (strcat "读取块引用 " name " [" handle "]"))
+  (OCS:setStage label)
+  (setq blk (OCS:mustCall 'vla-Item (list (OCS:requireProp doc 'Blocks) name)))
+  (if (not (or (OCS:boolProp blk 'IsXRef) (OCS:strContains name "|")))
+    (progn
+      (setq has (OCS:boolProp e 'HasAttributes))
+      (if has
+        (foreach meth (list 'vla-GetAttributes 'vla-GetConstantAttributes)
+          (OCS:setStage (strcat label " / " (vl-symbol-name meth)))
+          (setq attrs (OCS:variantToList (OCS:mustCall meth (list e))))
+          (foreach a attrs (setq res (OCS:visitEntity res doc a ctx)))))
     )
   )
   res
@@ -1268,7 +1450,11 @@
   (if (null obj) nil
     (progn
       (setq r (vl-catch-all-apply (read (strcat "vla-get-" (vl-symbol-name prop))) (list obj)))
-      (if (vl-catch-all-error-p r) nil r)
+      (if (vl-catch-all-error-p r)
+        (progn
+          (OCS:trace "OPTIONAL_PROPERTY_ERROR" (list (vl-symbol-name prop) (vl-catch-all-error-message r)))
+          nil)
+        r)
     )
   )
 )
@@ -1285,24 +1471,31 @@
   )
 )
 
+;; 空 SAFEARRAY 是合法返回值，但直接转列表可报 ActiveX 无效索引。
+;; 仅在成功读取各维边界后判空；真实读取错误不得伪装成没有属性。
+(defun OCS:safeArrayToList (value / dims dim lo hi empty)
+  (setq dims (OCS:mustCall 'vlax-safearray-get-dim (list value)))
+  (if (or (not (numberp dims)) (< dims 1) (/= dims (fix dims)))
+    (OCS:fail "SAFEARRAY 维数无效"))
+  (setq dim 1 empty nil)
+  (while (<= dim dims)
+    (setq lo (OCS:mustCall 'vlax-safearray-get-l-bound (list value dim))
+          hi (OCS:mustCall 'vlax-safearray-get-u-bound (list value dim)))
+    (if (or (not (numberp lo)) (not (numberp hi)))
+      (OCS:fail "SAFEARRAY 上下界无效"))
+    (if (< hi lo) (setq empty T))
+    (setq dim (1+ dim)))
+  (if empty nil (OCS:mustCall 'vlax-safearray->list (list value)))
+)
+
 ;; Variant/SafeArray 解包（64 位 ObjectID 不转 32 位整数）
 (defun OCS:variantToList (v / r)
   (cond
     ((null v) nil)
     ((listp v) v)
-    (T
-     (setq r (vl-catch-all-apply 'vlax-safearray->list (list v)))
-     (if (vl-catch-all-error-p r)
-       ;; 标量 Variant
-       (progn
-         (setq r2 (vl-catch-all-apply 'vlax-variant-value (list v)))
-         (if (vl-catch-all-error-p r2) nil
-           (if (listp r2) r2 (list r2))
-         )
-       )
-       r
-     )
-    )
+    ((equal (type v) 'VARIANT) (OCS:variantToList (OCS:mustCall 'vlax-variant-value (list v))))
+    ((equal (type v) 'SAFEARRAY) (OCS:safeArrayToList v))
+    (T (list v))
   )
 )
 
@@ -1310,72 +1503,94 @@
 ;;; 修改计划 OCS:BuildPlan
 ;;; =====================================================================
 
-(defun OCS:BuildPlan ( / plan styles hosts)
-  (setq styles (OCS:CollectStyles))
-  (setq hosts   (OCS:CollectHosts))
-  (setq plan (list
-    "styles"    (OCS:getVal styles "normal" nil)
-    "shape"     (OCS:getVal styles "shape" nil)
-    "xrefStyle" (OCS:getVal styles "xref" nil)
-    "hosts"     (OCS:getVal hosts "hosts" nil)
-    "seen"      (OCS:getVal hosts "seen" nil)
-    "stats"     hosts
-    "targets"   nil      ; (kind obj handle ctx ...) 内容修改目标
-    "issues"    nil
-  ))
-  plan
+(defun OCS:BuildPlan ( / plan styles hosts targets host data new scan partial item)
+  (setq styles (OCS:CollectStyles) hosts (OCS:CollectHosts) targets nil)
+  (if (OCS:hasError hosts) (OCS:fail (OCS:fmt (OCS:problemsOf hosts))))
+  (foreach host (OCS:assocd "hosts" hosts nil)
+    (OCS:setStage (strcat "读取宿主 " (OCS:assocd "type" host "?") " ["
+                         (OCS:assocd "handle" host "?") "] " (OCS:ctxStr (OCS:assocd "ctx" host nil))))
+    (setq data (OCS:ReadHost host))
+    (if (OCS:assocd "error" data nil) (OCS:fail (OCS:assocd "error" data "")))
+    (setq partial (OCS:assocd "partial" data nil))
+    (if (not (OCS:assocd "skip" data nil))
+      (progn
+        (if (= (OCS:assocd "kind" data "") "table")
+          (setq new data)
+          (progn
+            (setq scan (OCS:NormalizeFontRuns (OCS:assocd "text" data "") (OCS:fontTarget)))
+            (if (OCS:assocd "issues" scan nil)
+              (OCS:fail (strcat "内容解析失败：" (OCS:fmt (OCS:assocd "issues" scan nil)))))
+            (setq new (OCS:putPair data "newText" (OCS:assocd "text" scan "")))
+            (setq new (OCS:putPair new "changes" (OCS:assocd "changes" scan 0)))))
+        (if (> (OCS:assocd "changes" new 0) 0)
+          (if (OCS:assocd "protected" data nil)
+            (setq partial (append partial (list "含字段的宿主保留原始字段关联，未改局部字体")))
+            (progn
+              (setq new (OCS:putPair new "before" (OCS:hostSnapshot (OCS:assocd "obj" host nil))))
+              (setq new (OCS:putPair new "host" host))
+              (setq targets (cons new targets)))))))
+    (foreach item partial
+      (setq hosts (OCS:putPair hosts "unknown" (1+ (OCS:assocd "unknown" hosts 0))))
+      (setq hosts (OCS:lstAppend hosts "skipped" (list "PROTECTED_CONTENT" (OCS:assocd "handle" host "?") item)))))
+  (list "styles" (OCS:assocd "normal" styles nil) "shape" (OCS:assocd "shape" styles nil)
+        "xrefStyle" (OCS:assocd "xref" styles nil) "hosts" (OCS:assocd "hosts" hosts nil)
+        "stats" hosts "targets" (reverse targets))
 )
 
 ;;; =====================================================================
 ;;; 应用样式修改 OCS:ApplyStyle
 ;;; =====================================================================
 
-(defun OCS:ApplyStyle (doc st / name ent o r before after)
-  (setq name (OCS:assocd "name" st ""))
-  (setq ent (tblobjname "STYLE" name))
+(defun OCS:ApplyStyle (doc st / name ent obj font before after result bold italic expected state)
+  (setq name (OCS:assocd "name" st "") ent (tblobjname "STYLE" name))
   (if (not ent)
     (list "ok" nil "name" name "error" "STYLE 记录未找到")
     (progn
-      (setq o (vlax-ename->vla-object ent))
-      (setq before (OCS:styleSnapshot ent))
-      ;; 1) FontFile
-      (setq r (OCS:safeMethod o 'FontFile nil))  ; 读
-      (setq r (vl-catch-all-apply 'vla-put-FontFile
-                (list o (OCS:styleTargetFontFile doc))))
-      (if (vl-catch-all-error-p r)
-        (list "ok" nil "name" name "error" (strcat "FontFile 写入失败：" (vl-catch-all-error-message r)))
+      (setq obj (vlax-ename->vla-object ent) font (OCS:getStyleFont obj)
+            bold (OCS:assocd "bold" font :vlax-false) italic (OCS:assocd "italic" font :vlax-false)
+            before (OCS:styleSnapshot ent))
+      (setq result (OCS:writeSongFont obj (OCS:assocd "font" *OCS:Plan* nil) bold italic))
+      (if (not (OCS:assocd "ok" result nil))
+        (list "ok" nil "name" name "error" (OCS:assocd "error" result "宋体写入失败"))
         (progn
-          ;; 2) SetFont
-          (setq r (vl-catch-all-apply 'vla-SetFont
-                    (list o "SimSun" "vlax-false" "vlax-false" 134 36)))
-          (if (vl-catch-all-error-p r)
-            (list "ok" nil "name" name "error" (strcat "SetFont 失败：" (vl-catch-all-error-message r)))
+          (setq expected (OCS:assocd "state" result nil))
+          (setq result (OCS:checkBigFontEmpty ent name))
+          (if (OCS:errp result)
+            (list "ok" nil "name" name "error" (strcat "大字体清空失败：" (OCS:errmsg result)))
             (progn
-              ;; 3) 大字体清空（组码 4）
-              (setq r (OCS:clearBigFont ent name))
-              (if (OCS:errp r)
-                (list "ok" nil "name" name "error" (strcat "大字体清空失败：" (OCS:errmsg r)))
-                (progn
-                  ;; 4) 读回验证
-                  (setq after (OCS:styleSnapshot (tblobjname "STYLE" name)))
-                  (if (not (OCS:styleReadbackOk before after))
-                    (list "ok" nil "name" name "error" "样式读回校验失败（非字体参数被改变）"
-                          "before" before "after" after)
-                    (list "ok" T "name" name "before" before "after" after)
-                  )
-                )
-              )
-            )
-          )
-        )
-      )
-    )
-  )
+              (setq after (OCS:styleSnapshot (tblobjname "STYLE" name)))
+              (setq state (OCS:fontState obj "style-after-check"))
+              (cond
+                ((not (OCS:fontStateStable expected state))
+                 (list "ok" nil "name" name "error" "样式只读复核后宋体绑定或粗斜体不匹配"))
+                ((not (OCS:styleReadbackOk before after))
+                 (list "ok" nil "name" name "error" "样式读回校验失败（非字体参数被改变）"))
+                (T (list "ok" T "name" name "before" before "after" after "fontExpected" state)))))))))
+)
+
+(defun OCS:getStyleFont (obj / family bold italic charset pitch)
+  (OCS:mustCall 'vla-GetFont (list obj 'family 'bold 'italic 'charset 'pitch))
+  (list "family" family "bold" bold "italic" italic "charSet" charset "pitchFamily" pitch)
+)
+
+(defun OCS:styleIsTarget (ent / font state)
+  (setq state (OCS:fontState (vlax-ename->vla-object ent) "target-check")
+        font (OCS:assocd "font" state nil))
+  (and (OCS:fontStateMatches state (OCS:assocd "bold" font nil) (OCS:assocd "italic" font nil))
+       (= (OCS:assocd "dxf4" state "") "")
+       (not (OCS:errp (OCS:checkBigFontEmpty ent (OCS:assocd 2 (entget ent) "")))))
+)
+
+(defun OCS:writeCall (fn args / r)
+  (setq r (OCS:tracedCall fn args))
+  (if (and *OCS:UndoMark* (not (vl-catch-all-error-p r)))
+    (setq *OCS:Wrote* T))
+  r
 )
 
 (defun OCS:styleTargetFontFile (doc / f)
-  (setq f (OCS:getVal (OCS:getVal *OCS:Plan* "font") "fontFile"))
-  (if (OCS:consp f) (cadr f) f)
+  (setq f (OCS:getVal (OCS:getVal *OCS:Plan* "font" nil) "fontFile" nil))
+  (if (OCS:consp f) (car f) f)
 )
 
 ;; 样式非字体参数快照（40/41/50/70/71 + 未知组码计数）
@@ -1386,19 +1601,19 @@
       (list
         "h"     (OCS:assocd 5 e "")
         "name"  (OCS:assocd 2 e "")
-        :40    (OCS:assocd 40 e nil)
-        :41    (OCS:assocd 41 e nil)
-        :50    (OCS:assocd 50 e nil)
-        :70    (OCS:assocd 70 e nil)
-        :71    (OCS:assocd 71 e nil)
-        :1071  (OCS:assocd 1071 e nil)
-        "xdata" (length (OCS:xdataKeys e))
+        "dxf40"    (OCS:assocd 40 e nil)
+        "dxf41"    (OCS:assocd 41 e nil)
+        "dxf50"    (OCS:assocd 50 e nil)
+        "dxf70"    (OCS:assocd 70 e nil)
+        "dxf71"    (OCS:assocd 71 e nil)
+        "dxf1071"  (OCS:assocd 1071 e nil)
+        "xdata" (OCS:nonFontXdata (entget ent '("*")))
       )
     )
   )
 )
 
-(defun OCS:xdataKeys (e / keys)
+(defun OCS:xdataKeys (e / keys pair)
   (setq keys nil)
   (foreach pair e
     (if (and (OCS:consp pair) (numberp (car pair)) (>= (car pair) 1000))
@@ -1408,9 +1623,9 @@
   keys
 )
 
-(defun OCS:styleReadbackOk (before after / ok)
+(defun OCS:styleReadbackOk (before after / ok key)
   (setq ok T)
-  (foreach key (list "name" :40 :41 :50 :70 :71 :1071 "xdata")
+  (foreach key (list "name" "dxf40" "dxf41" "dxf50" "dxf70" "dxf71" "xdata")
     (if (not (equal (OCS:assocd key before nil) (OCS:assocd key after nil) 1e-9))
       (setq ok nil)
     )
@@ -1418,33 +1633,25 @@
   ok
 )
 
-;; 大字体清空 + 读回
-(defun OCS:clearBigFont (ent name / e r e2 v)
-  (setq e (entget ent))
-  (if (not (assoc 4 e))
-    T  ; 本就没有大字体
+;; 日期：2026-10-13。只读检查同时覆盖 DXF 和 COM，缺失组码也不能跳过 COM。
+(defun OCS:checkBigFontEmpty (ent name / dxf com)
+  (setq dxf (OCS:assocd 4 (entget ent) "")
+        com (OCS:requireProp (vlax-ename->vla-object ent) 'BigFontFile))
+  (OCS:trace "BIGFONT_CHECK" (list "style" name "dxf4" dxf "com" com))
+  (if (and (equal dxf "") (equal com "")) T
+    (cons "error" (strcat "大字体读回非空或不一致：" (OCS:fmt (list dxf com)))))
+)
+
+;; 仅在设置宋体之前调用；空值不执行 entmod，保留所有应用的 XData。
+(defun OCS:clearBigFont (ent name / e r dxf com)
+  (setq e (entget ent '("*")) dxf (OCS:assocd 4 e "")
+        com (OCS:requireProp (vlax-ename->vla-object ent) 'BigFontFile))
+  (OCS:trace "BIGFONT_CLEAR" (list "style" name "dxf4" dxf "com" com
+    "action" (if (and (equal dxf "") (equal com "")) "skip-empty" "entmod-before-font")))
+  (if (and (equal dxf "") (equal com "")) T
     (progn
       (setq r (OCS:substDxf4 "" e))
-      (if (OCS:errp r) r
-        (progn
-          (setq e2 (entget (tblobjname "STYLE" name)))
-          (setq v (OCS:assocd 4 e2 "MISSING"))
-          (if (or (= v "MISSING") (= v ""))
-            (progn
-              ;; COM 读回
-              (setq r (vl-catch-all-apply 'vla-get-BigFontFile
-                        (list (vlax-ename->vla-object (tblobjname "STYLE" name)))))
-              (if (vl-catch-all-error-p r)
-                (cons "error" "大字体 COM 读回失败")
-                (if (= r "") T (cons "error" (strcat "大字体读回非空：" r)))
-              )
-            )
-            (cons "error" (strcat "大字体读回非空：" v))
-          )
-        )
-      )
-    )
-  )
+      (if (OCS:errp r) r (OCS:checkBigFontEmpty ent name))))
 )
 
 ;;; =====================================================================
@@ -1477,64 +1684,37 @@
 )
 
 ;; TEXT/MTEXT：完整原始内容
-(defun OCS:readTextLike (host e / kind r txt)
-  (setq kind (OCS:assocd "kind" host))
-  (setq r (vl-catch-all-apply 'vla-get-TextString (list e)))
-  (if (vl-catch-all-error-p r)
-    (list "kind" kind "obj" e "error" (vl-catch-all-error-message r))
+(defun OCS:readTextLike (host e / kind data raw)
+  (setq kind (OCS:assocd "kind" host nil))
+  (setq data (OCS:readContent e kind 'TextString))
+  (if (= kind "text")
+    (OCS:putPair data "skip" T) ; TEXT 中的反斜杠是字面内容。
     (progn
-      (setq txt r)
-      ;; MTEXT 的完整原始格式：TextString 在 MTEXT 上返回原始格式串；
-      ;; 长文本不分段读取（XDATA 组码 1 只是前 250 字符，不能作为来源）
-      (list "kind" kind "obj" e "text" txt
-            "styleName" (OCS:safeProp e 'StyleName)
-            "height" (OCS:safeProp e 'Height)
-            "width" (OCS:safeProp e 'Width)
-            "rotation" (OCS:safeProp e 'Rotation)
-            "layer" (OCS:safeProp e 'Layer)
-            "color" (OCS:safeProp e 'Color))
-    )
-  )
+      (setq raw (OCS:mustCall 'vla-FieldCode (list e)))
+      (if (not (OCS:stringp raw)) (OCS:fail "FieldCode 未返回原始文本"))
+      (setq data (OCS:putPair data "text" raw))
+      (OCS:putPair data "protected" (or (OCS:assocd "protected" data nil) (OCS:containsField raw)))))
 )
 
-(defun OCS:readAttr (host e / kind mt)
-  (setq kind (OCS:assocd "kind" host))
-  (setq mt (OCS:safeProp e 'MTextAttribute))
-  (if (equal mt "vlax-true")
-    (list "kind" kind "obj" e "multiline" T
-          "text" (OCS:safeProp e 'MTextAttributeContent)
-          "boundaryWidth" (OCS:safeProp e 'MTextBoundaryWidth)
-          "tag" (OCS:safeProp e 'TagString)
-          "value" (OCS:safeProp e 'TextString)
-          "styleName" (OCS:safeProp e 'StyleName)
-          "constant" (OCS:safeProp e 'Constant))
-    (list "kind" kind "obj" e "multiline" nil
-          "text" (OCS:safeProp e 'TextString)
-          "tag" (OCS:safeProp e 'TagString)
-          "styleName" (OCS:safeProp e 'StyleName)
-          "constant" (OCS:safeProp e 'Constant))
-  )
+(defun OCS:readAttr (host e / kind mt data)
+  (setq kind (OCS:assocd "kind" host nil) mt (OCS:boolProp e 'MTextAttribute))
+  (setq data (OCS:readContent e kind (if mt 'MTextAttributeContent 'TextString)))
+  (setq data (OCS:putPair data "multiline" mt))
+  (if mt
+    data
+    (OCS:putPair data "skip" T))
 )
 
-(defun OCS:readDim (host e / r)
-  (list "kind" "dim" "obj" e
-        "textOverride" (OCS:safeProp e 'TextOverride)
-        "textString" (OCS:safeProp e 'TextString)
-        "styleName" (OCS:safeProp e 'TextStyle)
-        "measurement" (OCS:safeProp e 'TextOverride)
-        "rotation" (OCS:safeProp e 'TextRotation)
-        "height" (OCS:safeProp e 'TextHeight))
+(defun OCS:readDim (host e)
+  (OCS:readContent e "dim" 'TextOverride)
 )
 
-(defun OCS:readMLeader (host e / r content)
-  (setq r (OCS:safeProp e 'TextString))
-  (if (not r)
-    ;; 多重引线可能使用块内容：读取其块引用与属性
-    (progn
-      (setq content (OCS:safeProp e 'BlockRecordId))
-      (list "kind" "mleader" "obj" e "text" nil "blockId" content))
-    (list "kind" "mleader" "obj" e "text" r "styleName" (OCS:safeProp e 'TextStyle))
-  )
+(defun OCS:readMLeader (host e / content)
+  (setq content (OCS:requireProp e 'ContentType))
+  (cond
+    ((= content 2) (OCS:readContent e "mleader" 'TextString))
+    ((or (= content 0) (= content 1)) (list "kind" "mleader" "obj" e "skip" T))
+    (T (OCS:fail "未知多重引线 ContentType")))
 )
 
 (defun OCS:readLeader (host e / ann)
@@ -1548,23 +1728,32 @@
   r
 )
 
-(defun OCS:readTable (host e / rows cols)
-  (setq rows (OCS:safeProp e 'Rows)
-        cols  (OCS:safeProp e 'Columns))
-  (list "kind" "table" "obj" e
-        "rows" rows "cols" cols
-        "styleName" (OCS:safeProp e 'StyleName)
-        "suppressed" (OCS:safeProp e 'RegenerateTableSuppressed)))
+(defun OCS:readTable (host e / rows cols row col data cell edits partial changes)
+  (setq rows (OCS:requireProp e 'Rows) cols (OCS:requireProp e 'Columns))
+  (if (or (not (numberp rows)) (not (numberp cols)) (< rows 0) (< cols 0))
+    (OCS:fail "表格行列数无效"))
+  (setq row 0 edits nil partial nil changes 0)
+  (while (< row rows)
+    (setq col 0)
+    (while (< col cols)
+      (setq cell (OCS:tableReadCell e row col))
+      (setq edits (append edits (OCS:assocd "edits" cell nil)))
+      (setq partial (append partial (OCS:assocd "partial" cell nil)))
+      (setq changes (+ changes (OCS:assocd "changes" cell 0)))
+      (setq col (1+ col)))
+    (setq row (1+ row)))
+  (list "kind" "table" "obj" e "rows" rows "cols" cols "edits" edits
+        "changes" changes "partial" partial "layout" (OCS:tableLayout e rows cols)
+        "suppressed" (OCS:requireProp e 'RegenerateTableSuppressed))
+)
 
 (defun OCS:readTolerance (host e)
-  (list "kind" "tolerance" "obj" e
-        "text" (OCS:safeProp e 'Text)
-        "styleName" (OCS:safeProp e 'StyleName))
+  (OCS:readContent e "tolerance" 'TextString)
 )
 
 ;;; 写回宿主
 (defun OCS:WriteHost (host data / kind e)
-  (setq kind (OCS:assocd "kind" data (OCS:assocd "kind" host))
+  (setq kind (OCS:assocd "kind" data (OCS:assocd "kind" host nil))
         e (OCS:assocd "obj" data (OCS:assocd "obj" host nil)))
   (cond
     ((or (equal kind "text") (equal kind "mtext"))
@@ -1590,8 +1779,8 @@
   (if (null txt)
     (list "ok" nil "error" "无内容")
     (progn
-      (setq before (OCS:hostSnapshot e))
-      (setq r (vl-catch-all-apply 'vla-put-TextString (list e txt)))
+      (setq before (OCS:assocd "before" data (OCS:hostSnapshot e)))
+      (setq r (OCS:writeCall 'vla-put-TextString (list e txt)))
       (if (vl-catch-all-error-p r)
         (list "ok" nil "error" (vl-catch-all-error-message r))
         (OCS:verifyHost e before (list "text" txt))
@@ -1600,16 +1789,16 @@
   )
 )
 
-(defun OCS:writeAttr (e data / txt r before mt w)
+(defun OCS:writeAttr (e data / txt r before mt w r2)
   (setq txt (OCS:assocd "text" data nil))
   (if (null txt)
     (list "ok" nil "error" "无内容")
     (progn
-      (setq before (OCS:hostSnapshot e))
+      (setq before (OCS:assocd "before" data (OCS:hostSnapshot e)))
       (setq mt (OCS:safeProp e 'MTextAttribute))
-      (if (equal mt "vlax-true")
+      (if (equal mt :vlax-true)
         (progn
-          (setq r (vl-catch-all-apply 'vla-put-MTextAttributeContent (list e txt)))
+          (setq r (OCS:writeCall 'vla-put-MTextAttributeContent (list e txt)))
           (if (vl-catch-all-error-p r)
             (setq r (cons "error" (vl-catch-all-error-message r)))
             (progn
@@ -1622,7 +1811,7 @@
           )
         )
         (progn
-          (setq r (vl-catch-all-apply 'vla-put-TextString (list e txt)))
+          (setq r (OCS:writeCall 'vla-put-TextString (list e txt)))
           (if (vl-catch-all-error-p r)
             (setq r (cons "error" (vl-catch-all-error-message r)))
           )
@@ -1630,7 +1819,7 @@
       )
       (if (OCS:errp r)
         (list "ok" nil "error" (OCS:errmsg r))
-        (OCS:verifyHost e before (list "text" txt))
+        (OCS:verifyHost e before (list "text" txt "property" (if (equal mt :vlax-true) 'MTextAttributeContent 'TextString)))
       )
     )
   )
@@ -1641,11 +1830,11 @@
   (if (null txt)
     (list "ok" nil "error" "无内容")
     (progn
-      (setq before (OCS:hostSnapshot e))
-      (setq r (vl-catch-all-apply 'vla-put-TextOverride (list e txt)))
+      (setq before (OCS:assocd "before" data (OCS:hostSnapshot e)))
+      (setq r (OCS:writeCall 'vla-put-TextOverride (list e txt)))
       (if (vl-catch-all-error-p r)
         (list "ok" nil "error" (vl-catch-all-error-message r))
-        (OCS:verifyHost e before (list "text" txt))
+        (OCS:verifyHost e before (list "text" txt "property" 'TextOverride))
       )
     )
   )
@@ -1657,8 +1846,8 @@
     ;; 块内容：块内文字由块定义转换覆盖，无需改写
     (list "ok" T "skip" T)
     (progn
-      (setq before (OCS:hostSnapshot e))
-      (setq r (vl-catch-all-apply 'vla-put-TextString (list e txt)))
+      (setq before (OCS:assocd "before" data (OCS:hostSnapshot e)))
+      (setq r (OCS:writeCall 'vla-put-TextString (list e txt)))
       (if (vl-catch-all-error-p r)
         (list "ok" nil "error" (vl-catch-all-error-message r))
         (OCS:verifyHost e before (list "text" txt))
@@ -1667,7 +1856,7 @@
   )
 )
 
-(defun OCS:writeLeader (e data / ann r txt)
+(defun OCS:writeLeader (e data / ann r txt before)
   ;; 关联注释对象单独处理（可能为 TEXT/MTEXT/块）
   (setq ann (OCS:assocd "annotation" data nil))
   (if (null ann)
@@ -1678,7 +1867,7 @@
         (list "ok" T "skip" T)
         (progn
           (setq before (OCS:hostSnapshot ann))
-          (setq r (vl-catch-all-apply 'vla-put-TextString (list ann txt)))
+          (setq r (OCS:writeCall 'vla-put-TextString (list ann txt)))
           (if (vl-catch-all-error-p r)
             (list "ok" nil "error" (vl-catch-all-error-message r))
             (OCS:verifyHost ann before (list "text" txt))
@@ -1694,11 +1883,11 @@
   (if (null txt)
     (list "ok" T "skip" T)
     (progn
-      (setq before (OCS:hostSnapshot e))
-      (setq r (vl-catch-all-apply 'vla-put-Text (list e txt)))
+      (setq before (OCS:assocd "before" data (OCS:hostSnapshot e)))
+      (setq r (OCS:writeCall 'vla-put-TextString (list e txt)))
       (if (vl-catch-all-error-p r)
         (list "ok" nil "error" (vl-catch-all-error-message r))
-        (OCS:verifyHost e before (list "text" txt))
+        (OCS:verifyHost e before (list "text" txt "property" 'TextString))
       )
     )
   )
@@ -1708,88 +1897,40 @@
 ;; - 临时抑制再生，结束时恢复
 ;; - 枚举行列与内容项（不假定只有 0 项）
 ;; - 字段/公式/数据链接不以显示值回写；仅普通文本参与字体指令替换
-(defun OCS:writeTable (e data / rows cols r prev cnt)
-  (setq rows (OCS:assocd "rows" data nil)
-        cols  (OCS:assocd "cols" data nil))
-  (if (or (null rows) (null cols))
-    (list "ok" nil "error" "无法读取表格行列数")
-    (progn
-      ;; 记录原抑制状态并抑制
-      (setq prev (OCS:safeProp e 'RegenerateTableSuppressed))
-      (setq r (vl-catch-all-apply 'vla-put-RegenerateTableSuppressed (list e "vlax-true")))
-      (if (vl-catch-all-error-p r)
-        (setq r (cons "error" (strcat "抑制表格再生失败：" (vl-catch-all-error-message r))))
-        (progn
-          (setq r (OCS:tableProcess e rows cols data))
-          ;; 恢复原状态（必须）
-          (setq r2 (vl-catch-all-apply 'vla-put-RegenerateTableSuppressed
-                     (list e (if (equal prev "vlax-true") "vlax-true" "vlax-false"))))
-          (if (vl-catch-all-error-p r2)
-            (setq r (cons "error" (strcat "恢复表格再生状态失败：" (vl-catch-all-error-message r2)))))
-          (if (OCS:errp r)
-            (list "ok" nil "error" (OCS:errmsg r))
-            (list "ok" T "contents" (OCS:assocd "contents" r 0))
-          )
-        )
-      )
-    )
-  )
+(defun OCS:writeTable (e data / r restore prev item)
+  (setq prev (OCS:assocd "suppressed" data :vlax-false))
+  (setq item (list "table" T "obj" e "value" prev))
+  (setq *OCS:TempState* (cons item *OCS:TempState*))
+  (setq r (OCS:writeCall 'vla-put-RegenerateTableSuppressed (list e :vlax-true)))
+  (if (not (vl-catch-all-error-p r))
+    (setq r (vl-catch-all-apply 'OCS:tableProcess
+      (list e (OCS:assocd "rows" data 0) (OCS:assocd "cols" data 0) data))))
+  (setq restore (OCS:writeCall 'vla-put-RegenerateTableSuppressed (list e prev)))
+  (cond
+    ((vl-catch-all-error-p r) (list "ok" nil "error" (OCS:errorText r)))
+    ((or (vl-catch-all-error-p restore)
+         (not (equal prev (OCS:requireProp e 'RegenerateTableSuppressed))))
+     (list "ok" nil "error" "表格再生状态恢复失败"))
+    ((not (equal (OCS:assocd "layout" data nil)
+                 (OCS:tableLayout e (OCS:assocd "rows" data 0) (OCS:assocd "cols" data 0)) 1e-9))
+     (list "ok" nil "error" "表格行高、列宽或合并关系变化"))
+    ((not (equal (OCS:assocd "before" data nil) (OCS:hostSnapshot e) 1e-9))
+     (list "ok" nil "error" "表格非字体参数变化"))
+    (T r))
 )
 
-(defun OCS:tableProcess (e rows cols data / r row col content txt new n go errList)
-  (setq n 0 row 0 errList nil)
-  (while (< row rows)
-    (setq col 0)
-    (while (< col cols)
-      ;; 枚举该单元格内容项：0..N-1。
-      ;; 终点只由“确认越界”（OUT_OF_CONTENT / DISP_E_OVERFLOW）判定；
-      ;; 一次普通读取失败、空字符串都不作为遍历终点，必须记录。
-      (setq content 0)
-      (setq go T)
-      (while (and go (<= content 64))
-        (setq r (OCS:tableGetText e row col content))
-        (cond
-          ((OCS:errp r)
-           (if (= (OCS:assocd "code" (OCS:errmsgList r) "") "OUT_OF_CONTENT")
-             (setq go nil)                 ; 确认越界 → 该单元格枚举结束
-             (progn                        ; 其他读取失败：记录并继续
-               (setq errList (append errList
-                             (list (list row col content (OCS:errmsg r)))))
-               (setq content (1+ content))
-             )
-           )
-          )
-          ((null (car r))
-           ;; 读到空串：不作为终点，继续下一内容项
-           (setq content (1+ content))
-          )
-          (T
-           (setq txt (car r))
-           (if (> (strlen txt) 0)
-             (progn
-               (setq new (OCS:NormalizeFontRuns txt (OCS:fontTarget)))
-               (if (and (> (OCS:assocd "changes" new 0) 0)
-                        (not (OCS:containsField txt)))
-                 (progn
-                   (setq r2 (OCS:tableSetText e row col content (OCS:assocd "text" new txt)))
-                   (if (OCS:errp r2)
-                     (setq errList (append errList
-                                 (list (list row col content (OCS:errmsg r2)))))
-                     (setq n (1+ n))
-                   )
-                 )
-               )
-             )
-           )
-           (setq content (1+ content))
-          )
-        )
-      )
-      (setq col (1+ col))
-    )
-    (setq row (1+ row))
-  )
-  (list "contents" n "errors" errList)
+(defun OCS:tableProcess (e rows cols data / edit r count)
+  (setq count 0)
+  (foreach edit (OCS:assocd "edits" data nil)
+    (OCS:TestFault "table-write")
+    (setq r (OCS:tableSetText e (OCS:assocd "row" edit 0) (OCS:assocd "col" edit 0)
+      (OCS:assocd "content" edit 0) (OCS:assocd "after" edit "")))
+    (if (OCS:errp r) (OCS:fail (OCS:errmsg r)))
+    (if (not (equal (OCS:assocd "meta" edit nil)
+         (OCS:tableMeta e (OCS:assocd "row" edit 0) (OCS:assocd "col" edit 0) (OCS:assocd "content" edit 0)) 1e-9))
+      (OCS:fail "表格单元格非字体格式变化"))
+    (setq count (1+ count)))
+  (list "ok" T "contents" count)
 )
 
 ;; tableGetText 返回 (cons :error (list :code .. :msg ..))
@@ -1798,28 +1939,16 @@
   (if (listp lst) lst (list "msg" lst))
 )
 
-(defun OCS:tableGetText (e row col content / r msg)
-  (setq r (vl-catch-all-apply 'vla-GetTextString (list e row col content)))
-  (cond
-    ((vl-catch-all-error-p r)
-     (setq msg (vl-catch-all-error-message r))
-     (cons "error"
-           (list "code" (if (or (OCS:strContains msg "8002000B")
-                               (OCS:strContains msg "0x8002000B")
-                               (OCS:strContains msg "超出")
-                               (OCS:strContains msg "index"))
-                           "OUT_OF_CONTENT" "READ_FAIL")
-                 "msg" msg)))
-    (T (list r))
-  )
+(defun OCS:tableGetText (e row col content)
+  (OCS:tracedCall 'vla-GetTextString (list e row col content))
 )
 
 (defun OCS:tableSetText (e row col content txt / r)
-  (setq r (vl-catch-all-apply 'vla-SetTextString (list e row col content txt)))
-  (if (vl-catch-all-error-p r)
-    (cons "error" (vl-catch-all-error-message r))
-    T
-  )
+  (setq r (OCS:writeCall 'vla-SetTextString (list e row col content txt)))
+  (cond ((vl-catch-all-error-p r) (cons "error" (vl-catch-all-error-message r)))
+        ((not (equal txt (OCS:mustCall 'vla-GetTextString (list e row col content))))
+         (cons "error" "表格文字读回不一致"))
+        (T T))
 )
 
 (defun OCS:containsField (s)
@@ -1827,35 +1956,29 @@
 )
 
 (defun OCS:fontTarget ()
-  (OCS:getVal (OCS:getVal *OCS:Plan* "font") "font"
-    (list (cons "family" "SimSun") (cons "charSet" 134)
-          (cons "pitchFamily" 36) (cons "appendParams" T)))
+  (OCS:getVal *OCS:Plan* "font"
+    (list "family" "SimSun" "charSet" 134 "pitchFamily" 22 "appendParams" T))
 )
 
 ;; 宿主快照（写后校验：非字体字段必须一致）
-(defun OCS:hostSnapshot (e / kind)
-  (list "height" (OCS:safeProp e 'Height)
-        "width" (OCS:safeProp e 'Width)
-        "rotation" (OCS:safeProp e 'Rotation)
-        "layer" (OCS:safeProp e 'Layer)
-        "color" (OCS:safeProp e 'Color)
-        "styleName" (OCS:safeProp e 'StyleName)
-        "tag" (OCS:safeProp e 'TagString)
-        "value" (OCS:safeProp e 'TextString))
+(defun OCS:hostSnapshot (e / out prop value)
+  (setq out nil)
+  (foreach prop (list 'Height 'Width 'Rotation 'Layer 'Color 'StyleName 'TagString
+                      'InsertionPoint 'TextAlignmentPoint 'Alignment 'AttachmentPoint
+                      'Normal 'ObliqueAngle 'ScaleFactor 'TextHeight 'TextWidth 'TextRotation
+                      'MTextBoundaryWidth 'LineSpacingFactor 'LineSpacingStyle 'DrawingDirection)
+    (if (vlax-property-available-p e prop)
+      (progn
+        (setq value (OCS:normalValue (OCS:requireProp e prop)))
+        (setq out (append out (list (vl-symbol-name prop) value))))))
+  out
 )
 
-(defun OCS:verifyHost (e before expect / after ok)
-  (setq after (OCS:hostSnapshot e) ok T)
-  (foreach key (list "height" "width" "rotation" "layer" "color" "styleName" "tag")
-    (if (not (equal (OCS:assocd key before nil) (OCS:assocd key after nil) 1e-9))
-      (setq ok nil)
-    )
-  )
-  (if (and (OCS:assocd "value" expect nil)
-           (not (equal (OCS:assocd "value" expect nil) (OCS:assocd "value" after nil))))
-    (setq ok nil)
-  )
-  (if ok (list "ok" T) (list "ok" nil "error" "写后校验：非字体数据发生变化"))
+(defun OCS:verifyHost (e before expect / after ok prop data)
+  (setq after (OCS:hostSnapshot e) ok (equal before after 1e-9))
+  (setq prop (OCS:assocd "property" expect 'TextString))
+  (if (not (equal (OCS:assocd "text" expect nil) (OCS:requireProp e prop))) (setq ok nil))
+  (if ok (list "ok" T) (list "ok" nil "error" "文字或非字体参数读回不一致"))
 )
 
 ;;; =====================================================================
@@ -1864,48 +1987,37 @@
 ;;; 关闭、冻结状态保持不动；外参图层保持原状。
 ;;; =====================================================================
 
-(defun OCS:lockLayersNeeded ( / doc layers i lay name locked)
-  (setq doc (OCS:activeDoc))
-  (if (not doc) nil
-    (progn
-      (setq layers (vla-get-Layers doc) i 1)
-      (while (<= i (vla-get-Count layers))
-        (setq lay (OCS:safeItem layers i))
-        (if lay
-          (progn
-            (setq name (OCS:safeProp lay 'Name)
-                  locked (OCS:safeProp lay 'Lock))
-            (if (and name (equal locked "vlax-true")
-                     (not (OCS:isXrefLayer name)))
-              (setq *OCS:TempState*
-                    (append *OCS:TempState*
-                            (list (list "layer" name "obj" lay))))
-            )
-          )
-        )
-        (setq i (1+ i))
-      )
-      *OCS:TempState*
-    )
-  )
+(defun OCS:lockLayersNeeded ( / doc layers target name lay seen)
+  (setq doc (OCS:activeDoc) layers (vla-get-Layers doc) seen nil)
+  (foreach target (OCS:assocd "targets" *OCS:Plan* nil)
+    (setq name (OCS:requireProp (OCS:assocd "obj" target nil) 'Layer))
+    (if (OCS:isXrefLayer name) (OCS:fail "拒绝修改外参图层上的宿主"))
+    (if (not (member name seen))
+      (progn
+        (setq seen (cons name seen) lay (OCS:mustCall 'vla-Item (list layers name)))
+        (if (OCS:boolProp lay 'Lock)
+          (setq *OCS:TempState* (cons (list "layer" name "obj" lay "value" :vlax-true) *OCS:TempState*))))))
+  *OCS:TempState*
 )
 
 (defun OCS:isXrefLayer (name)
   (OCS:strContains name "|")
 )
 
-(defun OCS:unlockTempLayers ( / item)
+(defun OCS:unlockTempLayers ( / item obj r)
   (foreach item *OCS:TempState*
-    (if (and (OCS:consp item) (equal (car item) "layer"))
-      (vl-catch-all-apply 'vla-put-Lock (list (OCS:assocd "obj" item nil) "vlax-false"))
-    )
-  )
+    (if (= (car item) "layer")
+      (progn
+        (setq obj (OCS:assocd "obj" item nil))
+        (setq r (OCS:writeCall 'vla-put-Lock (list obj :vlax-false)))
+        (if (or (vl-catch-all-error-p r) (OCS:boolProp obj 'Lock))
+          (OCS:fail "无法临时解锁目标文字图层")))))
 )
 
 (defun OCS:restoreTempLayers ( / item)
   (foreach item *OCS:TempState*
     (if (and (OCS:consp item) (equal (car item) "layer"))
-      (vl-catch-all-apply 'vla-put-Lock (list (OCS:assocd "obj" item nil) "vlax-true"))
+      (OCS:writeCall 'vla-put-Lock (list (OCS:assocd "obj" item nil) :vlax-true))
     )
   )
 )
@@ -1931,6 +2043,7 @@
 )
 
 (defun OCS:appendError (report where msg / errs detail)
+  (OCS:trace "ERROR" (list where msg))
   (setq errs  (1+ (OCS:assocd "errors" report 0))
         detail (append (OCS:assocd "errorDetail" report nil)
                        (list (list where msg))))
@@ -1939,7 +2052,7 @@
   )
 )
 
-(defun OCS:appendErrors (report msgs / errs detail)
+(defun OCS:appendErrors (report msgs / errs detail m)
   (setq errs (+ (OCS:assocd "errors" report 0) (length msgs))
         detail (OCS:assocd "errorDetail" report nil))
   (foreach m msgs
@@ -1951,32 +2064,13 @@
 )
 
 ;; 用新值替换 plist 中已存在的键（不产生重复键）
-(defun OCS:reportSet (report pairs / out done i n item)
-  ;; 扁平 plist 批量设值；pairs 为点对列表 ((K . V) ...)
+(defun OCS:reportSet (report pairs / pair)
   (foreach pair pairs
-    (setq out nil done nil i 0 n (length report))
-    (while (< i n)
-      (setq item (nth i report))
-      (if (and (not done) (equal item (car pair)))
-        (progn
-          (setq out (append out (list (car pair) (cdr pair))))
-          (setq done T)
-          (setq i (1+ i))
-          (if (< i n) (setq i (1+ i)))
-        )
-        (progn
-          (setq out (append out (list item)))
-          (setq i (1+ i))
-        )
-      )
-    )
-    (if (not done) (setq out (append out (list (car pair) (cdr pair)))))
-    (setq report out)
-  )
+    (setq report (OCS:putPair report (car pair) (cdr pair))))
   report
 )
 
-(defun OCS:problemsOf (res / out)
+(defun OCS:problemsOf (res / out item)
   (setq out nil)
   (foreach item res
     (if (and (OCS:consp item) (equal (car item) "problem")
@@ -2006,20 +2100,30 @@
       (setq r (vl-catch-all-apply 'vla-Regen (list doc 1))) ; acAllViewports
       (if (vl-catch-all-error-p r)
         (list "ok" nil "error" (strcat "再生失败：" (vl-catch-all-error-message r)))
-        (OCS:readbackStyles)
+        (progn
+          (setq r (OCS:readbackStyles))
+          (if (OCS:assocd "ok" r nil) (OCS:readbackHosts) r))
       )
     )
   )
 )
 
 ;; 样式读回：字体族为宋体、大字体为空、原参数一致
-(defun OCS:readbackStyles ( / ok details st ent e)
+(defun OCS:readbackStyles ( / ok details st ent e expected)
   (setq ok T details nil)
   (foreach st (OCS:assocd "styles" *OCS:Plan* nil)
     (setq ent (tblobjname "STYLE" (OCS:assocd "name" st "")))
     (if ent
       (progn
         (setq e (entget ent))
+        (if (not (OCS:styleIsTarget ent))
+          (progn (setq ok nil)
+                 (setq details (append details (list (list "FONT_NOT_SIMSUN" (OCS:assocd 2 e "")))))))
+        (setq expected (OCS:assocd "fontExpected" st nil))
+        (if (and expected (not (OCS:fontStateStable expected
+                               (OCS:fontState (vlax-ename->vla-object ent) "style-after-regen"))))
+          (progn (setq ok nil)
+                 (setq details (append details (list (list "FONT_BINDING_CHANGED" (OCS:assocd 2 e "")))))))
         (if (/= "" (OCS:assocd 4 e ""))
           (progn (setq ok nil)
                  (setq details (append details
@@ -2037,7 +2141,7 @@
                (list (list "STYLE_MISSING" (OCS:assocd "name" st ""))))))
     )
   )
-  (list "ok" ok "details" details)
+  (list "ok" ok "details" details "error" (if ok nil (OCS:fmt details)))
 )
 
 ;;; =====================================================================
@@ -2046,75 +2150,78 @@
 ;;; 绝不无条件 UNDO Back 撤销用户上一条命令。
 ;;; =====================================================================
 
-(defun OCS:Rollback ( / r ok)
-  (setq ok T)
-  ;; 结束本次 Undo 分组（把全部写入归入一组）
-  (OCS:endUndoGroup)
-  ;; 仅撤销本次分组
-  (setq r (vl-catch-all-apply 'command (list "_.U")))
-  (if (or (vl-catch-all-error-p r) (null r))
-    (setq ok nil)
-  )
-  ;; 恢复临时状态
-  (if (not (OCS:restoreTempState))
-    (setq ok nil)
-  )
-  ;; 回滚后读回核对（样式应回到转换前状态）
-  (if (not (OCS:rollbackReadbackOk))
-    (setq ok nil)
-  )
-  ok
+(defun OCS:Rollback ( / r ok changed)
+  (OCS:trace "ROLLBACK_BEGIN" (list "undoMark" *OCS:UndoMark* "wrote" *OCS:Wrote*))
+  (setq changed (and *OCS:UndoMark* *OCS:Wrote*))
+  (setq ok (OCS:restoreTempState))
+  (if (not (OCS:endUndoGroup))
+    nil ; 未能关闭本次分组时，绝不向用户历史发出 U。
+    (progn
+      (if changed
+        (if *OCS:UndoAttempted* (setq ok nil)
+          (progn
+            (setq *OCS:UndoAttempted* T)
+            (setq r (vl-catch-all-apply 'command-s (list "_.U")))
+            (if (vl-catch-all-error-p r) (setq ok nil)))))
+      (if (not (OCS:restoreTempState)) (setq ok nil))
+      (if (not (OCS:rollbackReadbackOk)) (setq ok nil))
+      (OCS:trace "ROLLBACK_END" (list "ok" ok "undoAttempted" *OCS:UndoAttempted*))
+      (setq *OCS:Wrote* nil)
+      ok))
 )
 
 ;; 回滚后读回：本次计划中的样式不得残留空大字体之外的转换痕迹
-(defun OCS:rollbackReadbackOk ( / ok st ent e)
+(defun OCS:rollbackReadbackOk ( / ok st ent e target host data edit)
   (setq ok T)
   (foreach st (OCS:assocd "styles" *OCS:Plan* nil)
     (setq ent (tblobjname "STYLE" (OCS:assocd "name" st "")))
-    (if ent
+    (if (not ent) (setq ok nil)
       (progn
         (setq e (entget ent))
-        ;; 若转换前该样式有大字体，回滚后应恢复
-        (if (OCS:assocd "bigFontBefore" st nil)
-          (if (/= (OCS:assocd 4 e "") (OCS:assocd "bigFontBefore" st ""))
-            (setq ok nil)
-          )
-        )
-      )
-    )
-  )
+        (if (or (not (equal (OCS:assocd 3 e "") (OCS:assocd "fontFileBefore" st "")))
+                (not (equal (OCS:assocd 4 e "") (OCS:assocd "bigFontBefore" st "")))
+                (not (equal (OCS:assocd "fontBefore" st nil) (OCS:getStyleFont (vlax-ename->vla-object ent))))
+                (not (OCS:styleReadbackOk (OCS:assocd "before" st nil) (OCS:styleSnapshot ent))))
+          (setq ok nil)))))
+  (foreach target (OCS:assocd "targets" *OCS:Plan* nil)
+    (setq e (OCS:assocd "obj" target nil))
+    (if (not (equal (OCS:assocd "before" target nil) (OCS:hostSnapshot e) 1e-9)) (setq ok nil))
+    (if (= (OCS:assocd "kind" target "") "table")
+      (progn
+        (foreach edit (OCS:assocd "edits" target nil)
+          (if (not (equal (OCS:assocd "before" edit "")
+                (OCS:mustCall 'vla-GetTextString (list e (OCS:assocd "row" edit 0)
+                  (OCS:assocd "col" edit 0) (OCS:assocd "content" edit 0))))) (setq ok nil)))
+        (if (not (equal (OCS:assocd "layout" target nil)
+              (OCS:tableLayout e (OCS:assocd "rows" target 0) (OCS:assocd "cols" target 0)) 1e-9)) (setq ok nil)))
+      (if (not (equal (OCS:assocd "text" target "")
+            (OCS:assocd "text" (OCS:ReadHost (OCS:assocd "host" target nil)) ""))) (setq ok nil))))
   ok
 )
 
-(defun OCS:endUndoGroup ( / )
-  (if *OCS:UndoMark*
+(defun OCS:endUndoGroup ( / r)
+  (if (not *OCS:UndoMark*) T
     (progn
-      (vl-catch-all-apply 'vla-EndUndoMark
-        (list (vla-get-ActiveDocument (vlax-get-acad-object))))
-      (setq *OCS:UndoMark* nil)
-    )
-  )
-  T
+      (setq r (vl-catch-all-apply 'vla-EndUndoMark (list (OCS:activeDoc))))
+      (if (vl-catch-all-error-p r) nil
+        (progn (setq *OCS:UndoMark* nil) T))))
 )
 
-(defun OCS:restoreTempState ( / ok item lay)
-  (setq ok T)
-  ;; 恢复临时解锁的图层（原锁定状态）
+(defun OCS:restoreTempState ( / ok item obj r pending prop value)
+  (setq ok T pending nil)
   (foreach item *OCS:TempState*
-    (if (and (OCS:consp item) (equal (car item) "layer"))
-      (progn
-        (setq lay (OCS:assocd "obj" item nil))
-        (if lay
-          (progn
-            (setq r (vl-catch-all-apply 'vla-put-Lock (list lay "vlax-true")))
-            (if (vl-catch-all-error-p r) (setq ok nil))
-          )
-        )
-      )
-    )
-  )
-  ;; 表格抑制状态已在各表处理中恢复；此处兜底清空
-  (setq *OCS:TempState* nil)
+    (setq obj (OCS:assocd "obj" item nil))
+    (setq prop (if (= (car item) "table") 'RegenerateTableSuppressed 'Lock))
+    (setq value (OCS:assocd "value" item :vlax-true))
+    (setq r (OCS:writeCall (read (strcat "vla-put-" (vl-symbol-name prop))) (list obj value)))
+    (if (or (vl-catch-all-error-p r) (not (equal (OCS:safeProp obj prop) value)))
+      (setq ok nil pending (cons item pending))))
+  (setq *OCS:TempState* (reverse pending))
+  (if *OCS:ProbeStyle*
+    (progn
+      (setq r (vl-catch-all-apply 'OCS:deleteStyleIfExists (list *OCS:ProbeStyle*)))
+      (if (or (vl-catch-all-error-p r) (tblobjname "STYLE" *OCS:ProbeStyle*))
+        (setq ok nil) (setq *OCS:ProbeStyle* nil))))
   ok
 )
 
@@ -2122,7 +2229,7 @@
 ;;; 报告 OCS:Report
 ;;; =====================================================================
 
-(defun OCS:Report (report / f)
+(defun OCS:Report (report / f d)
   (setq *OCS:LastReport* report)
   (setq *OCS:Report* report)
   ;; 中文命令行摘要
@@ -2165,7 +2272,7 @@
   report
 )
 
-(defun OCS:fmt (x / out)
+(defun OCS:fmt (x / out i)
   (cond
     ((OCS:stringp x) x)
     ((numberp x) (rtos x 2 6))
@@ -2254,83 +2361,55 @@
   (princ)
 )
 
-(defun c:YJST ( / )
-  (if *OCS:Running*
-    (princ "\nYJST：上一次运行尚未结束（重入被拒绝）。")
-    (progn
-      (setq *OCS:Running* T
-            *OCS:EscRequested* nil
-            *OCS:TempState* nil
-            *OCS:UndoMark* nil)
-      (OCS:mainFlow)
+(defun c:YJST ( / r report)
+  (cond
+    (*OCS:Running* (princ "\nYJST：上一次运行尚未结束。"))
+    (*OCS:UndoMark* (princ "\nYJST：上次撤销分组未能关闭，请先检查恢复失败明细。"))
+    (T
+      (setq *OCS:Running* T *OCS:Plan* nil *OCS:TempState* nil *OCS:Wrote* nil
+            *OCS:UndoAttempted* nil *OCS:FailureMessage* nil *OCS:ProbeStyle* nil)
+      (princ (strcat "\nYJST v" *OCS:Version* " 开始执行。"))
+      (OCS:logStart)
+      (setq r (vl-catch-all-apply 'OCS:mainFlow nil))
+      (if (vl-catch-all-error-p r)
+        (progn
+          (setq report (OCS:appendError (OCS:runStats (OCS:makeReport "预检失败") nil nil)
+                                       *OCS:Stage* (OCS:errorText r)))
+          (if *OCS:UndoMark* (setq report (OCS:recoverReport report))))
+        (setq report r))
       (setq *OCS:Running* nil)
-    )
-  )
+      (setq report (OCS:putPair report "logPath" *OCS:LogPath*))
+      (setq *OCS:LastReport* report)
+      (OCS:trace "RUN_RESULT" report)
+      (setq r (vl-catch-all-apply 'OCS:Report (list report)))
+      (if (vl-catch-all-error-p r)
+        (OCS:trace "REPORT_ERROR" (vl-catch-all-error-message r)))
+      (OCS:trace "RUN_END" (OCS:assocd "status" report "?"))
+      (setq *OCS:TraceActive* nil)
+      (c:YJSTLOG)))
   (princ)
 )
 
-(defun OCS:mainFlow ( / report pre plan r okUndo)
-  (setq *OCS:EscRequested* nil)
-  ;; ---- 1) 预检（业务写入之前的一切检查） ----
-  (setq pre (vl-catch-all-apply 'OCS:Preflight nil))
-  (cond
-    ((vl-catch-all-error-p pre)
-     ;; 预检本身异常 → 未写入任何数据
-     (setq report (OCS:makeReport "预检失败"))
-     (setq report (OCS:appendErrors report
-                     (list (vl-catch-all-error-message pre))))
-     (OCS:Report report)
-    )
-    ((not (OCS:getVal pre "ok" nil))
-     (setq report (OCS:makeReport "预检失败"))
-     (setq report (OCS:appendErrors report (OCS:problemsOf pre)))
-     (OCS:Report report)
-    )
-    (T
-     ;; ---- 2) 扫描并生成修改计划（只读阶段） ----
-     (setq plan (vl-catch-all-apply 'OCS:BuildPlan nil))
-     (if (vl-catch-all-error-p plan)
-       (progn
-         (setq report (OCS:makeReport "预检失败"))
-         (setq report (OCS:appendErrors report
-                         (list (strcat "扫描计划失败："
-                                       (vl-catch-all-error-message plan)))))
-         (OCS:Report report)
-       )
-       (progn
-         (setq *OCS:Plan* (OCS:putPair plan "font" (OCS:getVal pre "font")))
-         ;; ---- 3) 开始 Undo 分组 ----
-         (setq okUndo (OCS:beginUndoGroup))
-         (if (not okUndo)
-           (progn
-             (setq report (OCS:makeReport "撤销不可用，未写入任何数据"))
-             (OCS:Report report)
-           )
-           (progn
-             ;; 写入阶段：任何未捕获错误都进入收尾/回滚（含 Esc）
-             (setq report (vl-catch-all-apply 'OCS:executeWrites nil))
-             (if (vl-catch-all-error-p report)
-               (progn
-                 (setq report (OCS:makeReport "失败已回滚"))
-                 (setq report (OCS:appendErrors report
-                                 (list (vl-catch-all-error-message report))))
-                 ;; Esc 或未预期错误：恢复临时状态并回滚本次分组
-                 (OCS:restoreTempState)
-                 (if (not (OCS:Rollback))
-                   (setq report (OCS:reportSet report (list (cons "recoverFailed" 1))))
-                 )
-                 ;; appendErrors 会把 :status 覆盖？不会：它只改 :errors/:errorDetail
-                 (setq report (OCS:reportSet report (list (cons "status" "失败已回滚"))))
-               )
-             )
-             (OCS:Report report)
-           )
-         )
-       )
-     )
-    )
-  )
-  (princ)
+(defun OCS:mainFlow ( / pre plan)
+  (OCS:setStage "环境与字体预检")
+  (princ "\n[1/3] 检查环境与宋体字体...")
+  (setq pre (OCS:Preflight))
+  (if (not (OCS:assocd "ok" pre nil))
+    (OCS:appendErrors (OCS:makeReport "预检失败") (OCS:problemsOf pre))
+    (progn
+      (OCS:setStage "扫描与生成计划")
+      (princ "\n[2/3] 读取原始内容并生成修改计划...")
+      (setq plan (OCS:BuildPlan))
+      (setq *OCS:Plan* (OCS:putPair plan "font" (OCS:assocd "font" pre nil)))
+      (OCS:trace "PLAN_READY" (list "styles" (length (OCS:assocd "styles" plan nil))
+        "hosts" (length (OCS:assocd "hosts" plan nil)) "targets" (length (OCS:assocd "targets" plan nil))
+        "uncovered" (OCS:assocd "unknown" (OCS:assocd "stats" plan nil) 0)))
+      (if (and (OCS:hasPlannedWrites) (not (OCS:beginUndoGroup)))
+        (OCS:appendError (OCS:makeReport "预检失败") "UNDO" "无法建立撤销分组，未写入业务数据")
+        (progn
+          (OCS:setStage "写入与校验")
+          (princ "\n[3/3] 更新字体并读回校验...")
+          (OCS:executeWrites)))))
 )
 
 (defun OCS:beginUndoGroup ( / doc r)
@@ -2339,144 +2418,95 @@
     (progn
       (setq r (vl-catch-all-apply 'vla-StartUndoMark (list doc)))
       (if (vl-catch-all-error-p r) nil
-        (progn (setq *OCS:UndoMark* T) T)
+        (progn (setq *OCS:UndoMark* T *OCS:Wrote* nil) T)
       )
     )
   )
 )
 
 ;; 执行写入与检查（含回滚路径）
-(defun OCS:executeWrites ( / report stylesRes hostsRes verifyRes wrote)
-  (setq report (OCS:makeReport nil))
-  ;; 临时解锁
+(defun OCS:executeWrites ( / report stylesRes hostsRes verifyRes probe)
+  (setq report (OCS:makeReport "进行中"))
+  (if (OCS:hasPlannedWrites)
+    (progn
+      (OCS:setStage "分组内字体试写")
+      (setq probe (OCS:verifyFontWrite (OCS:assocd "font" *OCS:Plan* nil)))
+      (if (OCS:hasError probe) (OCS:fail (OCS:fmt (OCS:problemsOf probe))))
+      (setq *OCS:Plan* (OCS:putPair *OCS:Plan* "font" probe))))
   (OCS:lockLayersNeeded)
   (OCS:unlockTempLayers)
-  ;; 样式写入
+  (OCS:setStage "写入样式")
   (setq stylesRes (OCS:applyAllStyles))
   (if (OCS:assocd "error" stylesRes nil)
-    (setq report (OCS:appendError report "STYLE" (OCS:assocd "error" stylesRes ""))))
-  ;; 内容写入
-  (setq hostsRes (OCS:applyAllHosts))
-  ;; 其余统计（report 中已预置同名键，必须替换而非追加）
-  (setq report (OCS:reportSet report
-                 (list
-                   (cons "stylesScanned" (length (OCS:assocd "styles" *OCS:Plan* nil)))
-                   (cons "stylesModified" (OCS:assocd "modified" stylesRes 0))
-                   (cons "stylesXref" (length (OCS:assocd "xrefStyle" *OCS:Plan* nil)))
-                   (cons "stylesShape" (length (OCS:assocd "shape" *OCS:Plan* nil)))
-                   (cons "hostsScanned" (length (OCS:assocd "hosts" *OCS:Plan* nil)))
-                   (cons "fontRunsChanged" (OCS:assocd "changes" hostsRes 0))
-                   (cons "attribs" (OCS:assocd "attribs" (OCS:assocd "stats" *OCS:Plan*) 0))
-                   (cons "blocks" (OCS:assocd "blocks" (OCS:assocd "stats" *OCS:Plan*) 0))
-                   (cons "xrefBlocks" (OCS:assocd "xrefBlocks" (OCS:assocd "stats" *OCS:Plan*) 0))
-                   (cons "displayBlocks" (OCS:assocd "displayBlocks" (OCS:assocd "stats" *OCS:Plan*) 0))
-                   (cons "tableContents" (OCS:assocd "tableContents" hostsRes 0))
-                   (cons "uncovered" (OCS:assocd "unknown" (OCS:assocd "stats" *OCS:Plan*) 0))
-                   (cons "uncoveredDetail" (OCS:assocd "skipped" (OCS:assocd "stats" *OCS:Plan*) nil))
-                 )))
+    (setq report (OCS:appendError report "STYLE" (OCS:assocd "error" stylesRes "")))
+    (setq hostsRes (OCS:applyAllHosts)))
   (if (OCS:assocd "error" hostsRes nil)
     (setq report (OCS:appendError report "HOST" (OCS:assocd "error" hostsRes ""))))
-  ;; 临时状态恢复
-  (OCS:restoreTempState)
-  ;; 中途错误（写入失败/解析问题）→ 回滚本次业务写入
-  (if (OCS:assocd "errors" report 0)
+  (setq report (OCS:runStats report stylesRes hostsRes))
+  (OCS:setStage "恢复临时状态")
+  (if (not (OCS:restoreTempState))
+    (setq report (OCS:appendError report "RESTORE" "临时状态恢复失败")))
+  (if (= (OCS:assocd "errors" report 0) 0)
     (progn
-      (setq report (OCS:reportSet report (list (cons "status" "失败已回滚"))))
-      (if (not (OCS:Rollback))
-        (setq report (OCS:reportSet report (list (cons "recoverFailed" 1))))
-      )
-    )
-    (progn
-      ;; 再生 + 读回
+      (OCS:setStage "再生与校验")
       (OCS:TestFault "regen-check")
       (setq verifyRes (OCS:VerifyDrawing))
-      (if (not (OCS:assocd "ok" verifyRes T))
-        (progn
-          (setq report (OCS:appendError report "VERIFY" (OCS:assocd "error" verifyRes "")))
-          ;; 读回不符 → 回滚本次修改
-          (setq report (OCS:reportSet report (list (cons "status" "失败已回滚"))))
-          (if (not (OCS:Rollback))
-            (setq report (OCS:reportSet report (list (cons "recoverFailed" 1))))
-          )
-        )
-        (progn
-          (OCS:endUndoGroup)
-          ;; 状态判定（方案第 12 节）
-          (setq report (OCS:reportSet report
-            (list (cons "status"
-              (cond
-                ((> (OCS:assocd "errors" report 0) 0) "失败已回滚")
-                ((> (OCS:assocd "uncovered" report 0) 0) "部分完成")
-                ((and (= 0 (OCS:assocd "stylesModified" report 0))
-                      (= 0 (OCS:assocd "fontRunsChanged" report 0)))
-                 "无需修改")
-                (T "已完成")
-              )))))
-        )
-      )
-    )
-  )
-  (setq report (OCS:reportSet report
-                 (list (cons "dwg" (getvar "DWGPREFIX"))
-                       (cons "cadver" (getvar "ACADVER"))
-                       (cons "family" "SimSun"))))
-  report
+      (if (not (OCS:assocd "ok" verifyRes nil))
+        (setq report (OCS:appendError report "VERIFY" (OCS:assocd "error" verifyRes "读回失败"))))))
+  (if (> (OCS:assocd "errors" report 0) 0)
+    (OCS:recoverReport report)
+    (if (not (OCS:endUndoGroup))
+      (OCS:recoverReport (OCS:appendError report "UNDO" "关闭撤销分组失败"))
+      (OCS:putPair report "status"
+        (cond ((> (OCS:assocd "uncovered" report 0) 0) "部分完成")
+              ((and (= (OCS:assocd "stylesModified" report 0) 0)
+                    (= (OCS:assocd "fontRunsChanged" report 0) 0)) "无需修改")
+              (T "已完成")))))
 )
 
-(defun OCS:applyAllStyles ( / modified err)
-  (setq modified 0 err nil)
+(defun OCS:applyAllStyles ( / modified err r st ent updated)
+  (setq modified 0 err nil updated nil)
   (foreach st (OCS:assocd "styles" *OCS:Plan* nil)
-    (if (not err)
+    (OCS:setStage (strcat "写入样式 " (OCS:assocd "name" st "?")))
+    (setq ent (tblobjname "STYLE" (OCS:assocd "name" st "")))
+    (if (and (not err) (not (and ent (OCS:styleIsTarget ent))))
       (progn
         (OCS:TestFault "style-write")
         (setq r (OCS:ApplyStyle (OCS:activeDoc) st))
         (if (OCS:assocd "ok" r nil)
-          (setq modified (1+ modified))
+          (progn
+            (setq modified (1+ modified))
+            (setq st (OCS:putPair st "fontExpected" (OCS:assocd "fontExpected" r nil))))
           (setq err (OCS:assocd "error" r "未知错误"))
         )
       )
     )
+    ;; 未修改的目标样式也记录本轮基线，防止宿主写入/再生改变字体表示或粗斜体。
+    (if (and (not err) ent (not (OCS:assocd "fontExpected" st nil)))
+      (setq st (OCS:putPair st "fontExpected" (OCS:fontState (vlax-ename->vla-object ent) "style-unchanged"))))
+    (setq updated (cons st updated))
   )
+  (setq *OCS:Plan* (OCS:putPair *OCS:Plan* "styles" (reverse updated)))
   (list "modified" modified "error" err)
 )
 
-(defun OCS:applyAllHosts ( / changes tableContents err data new r)
+(defun OCS:applyAllHosts ( / changes tableContents target host data r err)
   (setq changes 0 tableContents 0 err nil)
-  (foreach host (OCS:assocd "hosts" *OCS:Plan* nil)
+  (foreach target (OCS:assocd "targets" *OCS:Plan* nil)
     (if (not err)
       (progn
-        (setq data (OCS:ReadHost host))
-        (if (OCS:assocd "error" data nil)
-          (setq err (strcat (OCS:assocd "handle" host "?") ": " (OCS:assocd "error" data "")))
-          (if (not (OCS:assocd "skip" data nil))
-            (progn
-              (setq new (OCS:NormalizeFontRuns (OCS:assocd "text" data "") (OCS:fontTarget)))
-              (if (OCS:assocd "issues" new nil)
-                (setq err (strcat (OCS:assocd "handle" host "?") ": 内容解析问题 "
-                                   (OCS:fmt (OCS:assocd "issues" new nil))))
-              )
-              (if (and (not err) (> (OCS:assocd "changes" new 0) 0))
-                (progn
-                  (OCS:TestFault "content-write")
-                  (setq data (OCS:putPair data "text" (OCS:assocd "text" new "")))
-                  (setq r (OCS:WriteHost host data))
-                  (if (OCS:assocd "ok" r nil)
-                    (progn
-                      (setq changes (+ changes (OCS:assocd "changes" new 0)))
-                      (if (equal (OCS:assocd "kind" host) "table")
-                        (setq tableContents (+ tableContents (OCS:assocd "contents" r 0)))
-                      )
-                    )
-                    (setq err (strcat (OCS:assocd "handle" host "?") ": " (OCS:assocd "error" r "")))
-                  )
-                )
-              )
-            )
-          )
-        )
-      )
-    )
-  )
+        (setq host (OCS:assocd "host" target nil))
+        (OCS:setStage (strcat "写入宿主 " (OCS:assocd "handle" host "?")))
+        (OCS:TestFault "content-write")
+        (setq data target)
+        (if (/= (OCS:assocd "kind" data "") "table")
+          (setq data (OCS:putPair data "text" (OCS:assocd "newText" data ""))))
+        (setq r (OCS:WriteHost host data))
+        (if (OCS:assocd "ok" r nil)
+          (progn
+            (setq changes (+ changes (OCS:assocd "changes" target 0)))
+            (setq tableContents (+ tableContents (OCS:assocd "contents" r 0))))
+          (setq err (strcat (OCS:assocd "handle" host "?") ": " (OCS:assocd "error" r "写入失败")))))))
   (list "changes" changes "tableContents" tableContents "error" err)
 )
 
@@ -2495,15 +2525,12 @@
 ;;; ----------------------------------------------------------------------
 ;;; 自检入口（纯函数部分，不依赖 CAD 环境）：OCS:SelfTest
 ;;; ----------------------------------------------------------------------
-(defun OCS:SelfTest ( / cases pass fail)
+(defun OCS:SelfTest ( / cases pass fail c in n out r want wantN)
   (setq cases (OCS:selfTestCases) pass 0 fail 0)
   (foreach c cases
     (progn
       (setq in  (car c) want (cadr c) wantN (caddr c))
-      (setq r (OCS:NormalizeFontRuns in (list (cons "family" "SimSun")
-                                               (cons "charSet" 134)
-                                               (cons "pitchFamily" 36)
-                                               (cons "appendParams" T))))
+      (setq r (OCS:NormalizeFontRuns in (list "family" "SimSun" "charSet" 134 "pitchFamily" 22 "appendParams" T)))
       (setq out (OCS:assocd "text" r ""))
       (setq n  (OCS:assocd "changes" r 0))
       (if (and (= out want) (= n wantN))
@@ -2548,8 +2575,8 @@
     (list "%%c12 \\fISOCPEUR;\\S1/2; 完"
           "%%c12 \\fSimSun|c134|pf22;\\S1/2; 完" 1)
     ;; C06 字段保护（示例字段内容，\f 位于 %<...>% 内）
-    (list "值 %<\\f\\H0.5x;\\C1;\\f% \\pr \"0.00\";.Measured|%fml \\f+1; %>结束"
-          "值 %<\\f\\H0.5x;\\C1;\\f% \\pr \"0.00\";.Measured|%fml \\f+1; %>结束" 0)
+    (list "值 %<\\f\\H0.5x;\\C1;\\f% \\pr \"0.00\";.Measured|%fml \\f+1; >%结束"
+          "值 %<\\f\\H0.5x;\\C1;\\f% \\pr \"0.00\";.Measured|%fml \\f+1; >%结束" 0)
     ;; C07 转义
     (list "路径 C:\\temp\\{图} 与 \\fArial 不变"
           "路径 C:\\temp\\{图} 与 \\fArial 不变" 0)
@@ -2564,24 +2591,224 @@
           "{\\fSimSun|b1|i0|c134|pf22;标题}\\P{\\H0.7x;\\fSimSun|b0|i1|c134|pf22;说明}" 2)
     ;; C12 颜色与字距保持
     (list "\\C3;\\fCourier New;固定\\fSimSun;字宽\\Q5;尾"
-          "\\C3;\\fSimSun|c134|pf22;固定\\fSimSun|c134|pf22;字宽\\Q5;尾" 2)
+          "\\C3;\\fSimSun|c134|pf22;固定\\fSimSun;字宽\\Q5;尾" 1)
     ;; C13 幂等
     (list "{\\fSimSun|b1|i0|c134|pf22;幂等}" "{\\fSimSun|b1|i0|c134|pf22;幂等}" 0)
     ;; C14 正文中的字体名不改
     (list "本页统一使用黑体与 Arial 字体名说明"
           "本页统一使用黑体与 Arial 字体名说明" 0)
     ;; C15 字段嵌套在格式作用域内
-    (list "{\\fArial|b1;i;前 %<\\\\AcVar \\f\\\\H;>后}"
-          "{\\fSimSun|b1|c134|pf22;i;前 %<\\\\AcVar \\f\\\\H;>后}" 1)
+    (list "{\\fArial|b1;i;前 %<\\\\AcVar \\f\\\\H;>%后}"
+          "{\\fSimSun|b1|c134|pf22;i;前 %<\\\\AcVar \\f\\\\H;>%后}" 1)
   )
 )
 
 ;;; =====================================================================
+
+;;; 必需数据读取失败时停止，不把异常当作空值。
+(defun OCS:mustCall (fn args / r)
+  (setq r (OCS:tracedCall fn args))
+  (if (vl-catch-all-error-p r)
+    (OCS:fail (strcat (vl-symbol-name fn) "：" (vl-catch-all-error-message r))))
+  r
+)
+(defun OCS:requireProp (obj prop)
+  (OCS:mustCall (read (strcat "vla-get-" (vl-symbol-name prop))) (list obj))
+)
+(defun OCS:boolProp (obj prop / value)
+  (setq value (OCS:requireProp obj prop))
+  (cond ((equal value :vlax-true) T) ((equal value :vlax-false) nil)
+        (T (OCS:fail (strcat "无效的布尔属性：" (vl-symbol-name prop)))))
+)
+(defun OCS:readContent (obj kind prop / text)
+  (setq text (OCS:requireProp obj prop))
+  (if (not (OCS:stringp text)) (OCS:fail "文字属性未返回字符串"))
+  (list "obj" obj "kind" kind "text" text "property" prop
+        "protected" (or (OCS:containsField text) (OCS:hasFieldDictionary obj)))
+)
+
+
+(defun OCS:normalValue (value)
+  (cond ((equal (type value) 'VARIANT) (OCS:normalValue (OCS:mustCall 'vlax-variant-value (list value))))
+        ((equal (type value) 'SAFEARRAY) (OCS:safeArrayToList value))
+        (T value))
+)
+
+
+(defun OCS:tableMerge (e row col / merged minrow maxrow mincol maxcol)
+  (setq merged (OCS:mustCall 'vla-IsMergedCell (list e row col 'minrow 'maxrow 'mincol 'maxcol)))
+  (if (equal merged :vlax-true) (list minrow maxrow mincol maxcol) nil)
+)
+(defun OCS:tableLayout (e rows cols / row col out)
+  (if (or (/= rows (OCS:requireProp e 'Rows)) (/= cols (OCS:requireProp e 'Columns)))
+    (OCS:fail "表格行列数变化"))
+  (setq row 0 col 0 out (list rows cols))
+  (while (< row rows)
+    (setq out (append out (list (vla-GetRowHeight e row))) col 0)
+    (while (< col cols)
+      (setq out (append out (list (OCS:tableMerge e row col))))
+      (setq col (1+ col)))
+    (setq row (1+ row)))
+  (setq col 0)
+  (while (< col cols)
+    (setq out (append out (list (vla-GetColumnWidth e col))))
+    (setq col (1+ col)))
+  out
+)
+(defun OCS:tableMeta (e row col content)
+  (list (vla-GetTextStyle2 e row col content) (vla-GetTextHeight2 e row col content)
+        (vla-GetCellAlignment e row col) (OCS:colorSnapshot (vla-GetCellContentColor e row col)))
+)
+(defun OCS:indexErrorP (r / msg)
+  (and (vl-catch-all-error-p r)
+    (progn
+      (setq msg (strcase (vl-catch-all-error-message r)))
+      (or (OCS:strContains msg "8002000B") (OCS:strContains msg "INVALID INDEX")
+          (OCS:strContains msg "INDEX OUT OF RANGE") (OCS:strContains msg "INVALID INPUT")
+          (OCS:strContains msg "无效索引") (OCS:strContains msg "无效的索引")
+          (OCS:strContains msg "索引超出范围") (OCS:strContains msg "输入无效"))))
+)
+(defun OCS:tableEndP (e row col content r / check)
+  ;; 文本读取失败不是终点。至少已读到一个内容，且独立索引访问也必须确认越界。
+  (and (> content 0) (OCS:indexErrorP r)
+       (OCS:indexErrorP (vl-catch-all-apply 'vla-GetTextStyle2 (list e row col content)))
+       (OCS:indexErrorP (vl-catch-all-apply 'vla-GetFieldId2 (list e row col content))))
+)
+(defun OCS:tableReadCell (e row col / state typ merge label edits partial n done raw new fid formula changes edit)
+  (setq label (strcat "单元格[" (itoa row) "," (itoa col) "]")
+        edits nil partial nil changes 0)
+  (OCS:trace "TABLE_CELL" (list row col))
+  (setq merge (OCS:tableMerge e row col))
+  (if (not (and merge (or (/= row (car merge)) (/= col (nth 2 merge)))))
+    (progn
+      (setq state (OCS:mustCall 'vla-GetCellState (list e row col)))
+      (setq typ (OCS:mustCall 'vla-GetContentType (list e row col)))
+      (cond
+        ((equal (OCS:mustCall 'vla-IsEmpty (list e row col)) :vlax-true) nil)
+        ((or (/= 0 (logand state 31)) (/= typ 1))
+         (setq partial (list (strcat label "：链接、锁定、字段或块内容保持原状"))))
+        (T
+          (setq n 0 done nil)
+          (while (and (not done) (< n 1024))
+            (setq raw (OCS:tableGetText e row col n))
+            (if (vl-catch-all-error-p raw)
+              (if (OCS:tableEndP e row col n raw)
+                (setq done T)
+                (OCS:fail (strcat label " 内容项 " (itoa n) " 读取失败：" (vl-catch-all-error-message raw))))
+              (progn
+                (if (not (OCS:stringp raw)) (OCS:fail (strcat label " 未返回字符串")))
+                (setq fid (OCS:mustCall 'vla-GetFieldId2 (list e row col n)))
+                (setq formula (OCS:mustCall 'vla-GetHasFormula (list e row col n)))
+                (if (or (/= fid 0) (equal formula :vlax-true) (OCS:containsField raw))
+                  (setq partial (cons (strcat label "：字段或公式内容保持原状") partial))
+                  (progn
+                    (setq new (OCS:NormalizeFontRuns raw (OCS:fontTarget)))
+                    (if (OCS:assocd "issues" new nil) (OCS:fail (strcat label " 字体格式不完整")))
+                    (if (> (OCS:assocd "changes" new 0) 0)
+                      (progn
+                        (setq edit (list "row" row "col" col "content" n "before" raw
+                          "after" (OCS:assocd "text" new raw) "meta" (OCS:tableMeta e row col n)))
+                        (setq edits (cons edit edits) changes (+ changes (OCS:assocd "changes" new 0)))))))
+                (setq n (1+ n)))))
+          (if (not done) (OCS:fail (strcat label " 内容项达到 1024 上限，停止以免漏改")))))))
+  (list "edits" (reverse edits) "partial" partial "changes" changes)
+)
+
+
+(defun OCS:errorText (r)
+  (if *OCS:FailureMessage* *OCS:FailureMessage* (vl-catch-all-error-message r))
+)
+(defun OCS:verifyFontWrite (res / name r cleanup)
+  (setq name (OCS:tempStyleName) *OCS:ProbeStyle* name)
+  (setq r (vl-catch-all-apply 'OCS:probeFontBody (list res name)))
+  (setq cleanup (vl-catch-all-apply 'OCS:deleteStyleIfExists (list name)))
+  (if (vl-catch-all-error-p r) (setq r (OCS:addProblem res "error" (OCS:errorText r))))
+  (if (or (vl-catch-all-error-p cleanup) (tblobjname "STYLE" name))
+    (setq r (OCS:addProblem r "error" "临时字体样式清理失败"))
+    (setq *OCS:ProbeStyle* nil))
+  r
+)
+(defun OCS:hasPlannedWrites ( / needed st ent)
+  (setq needed (not (null (OCS:assocd "targets" *OCS:Plan* nil))))
+  (foreach st (OCS:assocd "styles" *OCS:Plan* nil)
+    (setq ent (tblobjname "STYLE" (OCS:assocd "name" st "")))
+    (if (or (not ent) (not (OCS:styleIsTarget ent))) (setq needed T)))
+  needed
+)
+(defun OCS:recoverReport (report / r)
+  (setq r (vl-catch-all-apply 'OCS:Rollback nil))
+  (OCS:trace "RECOVERY_RESULT" (if (vl-catch-all-error-p r) (vl-catch-all-error-message r) r))
+  (if (and (not (vl-catch-all-error-p r)) r)
+    (OCS:putPair report "status" "失败已回滚")
+    (progn
+      (setq report (OCS:putPair report "recoverFailed" 1))
+      (setq report (OCS:appendError report "RECOVERY" "自动恢复未通过校验，请检查原图与撤销记录"))
+      (OCS:putPair report "status" "恢复失败")))
+)
+(defun OCS:runStats (report styles hosts / stats key)
+  (setq stats (OCS:assocd "stats" *OCS:Plan* nil))
+  (foreach key (list "attribs" "blocks" "xrefBlocks" "displayBlocks")
+    (setq report (OCS:putPair report key (OCS:assocd key stats 0))))
+  (OCS:reportSet report
+    (list (cons "stylesScanned" (length (OCS:assocd "styles" *OCS:Plan* nil)))
+          (cons "stylesModified" (OCS:assocd "modified" styles 0))
+          (cons "stylesXref" (length (OCS:assocd "xrefStyle" *OCS:Plan* nil)))
+          (cons "stylesShape" (length (OCS:assocd "shape" *OCS:Plan* nil)))
+          (cons "hostsScanned" (length (OCS:assocd "hosts" *OCS:Plan* nil)))
+          (cons "fontRunsChanged" (OCS:assocd "changes" hosts 0))
+          (cons "tableContents" (OCS:assocd "contents" hosts (OCS:assocd "tableContents" hosts 0)))
+          (cons "uncovered" (OCS:assocd "unknown" stats 0))
+          (cons "uncoveredDetail" (OCS:assocd "skipped" stats nil))))
+)
+
 ;;; 加载提示（防御式：版本号取不到时不触发 strcat 类型错误）
 ;;; =====================================================================
+
+
+;; 日期：2026-10-13。只读扩展字典，不能调用会创建字典的 GetExtensionDictionary。
+(defun OCS:hasFieldDictionary (obj / e ext)
+  (setq e (entget (vlax-vla-object->ename obj)) ext (OCS:assocd 360 e nil))
+  (and ext (dictsearch ext "ACAD_FIELD"))
+)
+(defun OCS:nonFontXdata (e / out pair app)
+  (setq out nil)
+  (foreach pair e
+    (if (= (car pair) -3)
+      (foreach app (cdr pair)
+        ;; ACAD 中的字体名/字体位由 SetFont 维护，其余应用扩展数据原样比较。
+        (if (/= (strcase (car app)) "ACAD") (setq out (cons app out))))))
+  (reverse out)
+)
+(defun OCS:colorSnapshot (color)
+  (list (vla-get-ColorMethod color) (vla-get-ColorIndex color)
+        (vla-get-Red color) (vla-get-Green color) (vla-get-Blue color)
+        (vla-get-BookName color) (vla-get-ColorName color))
+)
+(defun OCS:readbackHosts ( / ok target e edit)
+  (setq ok T)
+  (foreach target (OCS:assocd "targets" *OCS:Plan* nil)
+    (setq e (OCS:assocd "obj" target nil))
+    (if (not (equal (OCS:assocd "before" target nil) (OCS:hostSnapshot e) 1e-9)) (setq ok nil))
+    (if (= (OCS:assocd "kind" target "") "table")
+      (progn
+        (foreach edit (OCS:assocd "edits" target nil)
+          (if (or (not (equal (OCS:assocd "after" edit "")
+                (vla-GetTextString e (OCS:assocd "row" edit 0) (OCS:assocd "col" edit 0) (OCS:assocd "content" edit 0))))
+              (not (equal (OCS:assocd "meta" edit nil)
+                (OCS:tableMeta e (OCS:assocd "row" edit 0) (OCS:assocd "col" edit 0) (OCS:assocd "content" edit 0)) 1e-9)))
+            (setq ok nil)))
+        (if (or (not (equal (OCS:assocd "suppressed" target nil) (vla-get-RegenerateTableSuppressed e)))
+                (not (equal (OCS:assocd "layout" target nil)
+                  (OCS:tableLayout e (OCS:assocd "rows" target 0) (OCS:assocd "cols" target 0)) 1e-9)))
+          (setq ok nil)))
+      (if (not (equal (OCS:assocd "newText" target "")
+            (OCS:assocd "text" (OCS:ReadHost (OCS:assocd "host" target nil)) ""))) (setq ok nil))))
+  (list "ok" ok "error" (if ok nil "再生后文字内容或非字体参数与计划不一致"))
+)
+
 (if (and (boundp '*OCS:Version*) *OCS:Version*)
-  (princ (strcat "\n一键统一宋体（YJST）v" *OCS:Version*
-                 " 已加载。输入 YJST 执行。"))
+(princ (strcat "\n一键统一宋体（YJST）v" *OCS:Version*
+                 " 已加载。输入 YJST 执行，YJSTLOG 查看日志路径。"))
   (princ "\n一键统一宋体（YJST）已加载。输入 YJST 执行。")
 )
 (princ)
