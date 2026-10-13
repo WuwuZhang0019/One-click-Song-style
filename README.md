@@ -1,6 +1,8 @@
 # 一键统一宋体（YJST）
 
 日期：2026-10-13
+
+许可证：[MIT](LICENSE)，Copyright (c) 2026 张裕锋。
 状态：v0.2.10 优化扫描与日志开销，增加总耗时；源码回归通过，原生 CAD 性能待复测
 
 将当前 DWG 的普通文字样式和可处理的局部字体统一为宋体（SimSun），保留其他格式。不自动保存，不修改 `SECURELOAD`、`FONTALT`、`FONTMAP` 或 `LISPSYS`。
