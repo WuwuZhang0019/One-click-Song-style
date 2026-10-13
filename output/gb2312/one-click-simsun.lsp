@@ -72,7 +72,9 @@
 ;;   (setq res (OCS:addProblem res "error" "Blocks 集合接口不可用")))
 
 ;;; ------------------------- 全局状态 -------------------------
-(setq *OCS:Version*      "0.2.9")
+(setq *OCS:Version*      "0.2.10")
+(setq *OCS:CollectReverse* nil)
+(setq *OCS:ClockStart* nil *OCS:PhaseStart* nil *OCS:PhaseName* nil *OCS:PhaseTimes* nil)
 (setq *OCS:CheckOnly* nil *OCS:LastCheckReport* nil)
 (setq *OCS:Stage* "初始化")
 (setq *OCS:FailureMessage* nil *OCS:ProbeStyle* nil *OCS:UndoAttempted* nil)
@@ -89,6 +91,7 @@
 ;;; 日期：2026-10-13。每次命令独立落盘；日志失败不得改变业务结果。
 (setq *OCS:LogPath* nil *OCS:LogEncoding* nil *OCS:LogError* nil)
 (setq *OCS:LogTail* nil *OCS:LogSeq* 0 *OCS:TraceActive* nil)
+(setq *OCS:LogPending* nil *OCS:LogPendingCount* 0)
 
 (defun OCS:logVar (name / result)
   (setq result (vl-catch-all-apply 'getvar (list name)))
@@ -101,12 +104,16 @@
     (open path mode))
 )
 
-(defun OCS:logWriteLine (line / fd result closed)
+(defun OCS:logWriteBatch (lines fd / line)
+  (foreach line lines (write-line line fd))
+)
+
+(defun OCS:logWriteLines (lines / fd result closed)
   (setq fd (OCS:logOpen *OCS:LogPath* "a"))
   (if fd
     (progn
-      (setq result (vl-catch-all-apply 'write-line (list line fd)))
-      ;; 即使写入失败也关闭文件；每条记录落盘，保留异常前的最后一个接口。
+      (setq result (vl-catch-all-apply 'OCS:logWriteBatch (list lines fd)))
+      ;; 批次内写入失败也关闭文件，保留已写入的前序记录。
       (setq closed (vl-catch-all-apply 'close (list fd)))
       (cond
         ((vl-catch-all-error-p result) (vl-catch-all-error-message result))
@@ -115,18 +122,29 @@
     "无法打开日志文件")
 )
 
-(defun OCS:traceBody (event data / line problem)
+(defun OCS:logFlush ( / lines problem)
+  (setq lines (reverse *OCS:LogPending*) *OCS:LogPending* nil *OCS:LogPendingCount* 0)
+  (if (and lines *OCS:LogPath* (not *OCS:LogError*))
+    (progn
+      (setq problem (vl-catch-all-apply 'OCS:logWriteLines (list lines)))
+      (if (vl-catch-all-error-p problem) (setq problem (vl-catch-all-error-message problem)))
+      (if problem (setq *OCS:LogError* problem))))
+  nil
+)
+
+(defun OCS:traceBody (event data / line)
   (setq *OCS:LogSeq* (1+ *OCS:LogSeq*))
   (setq line (vl-prin1-to-string
     (list *OCS:LogSeq* (OCS:logVar "MILLISECS") event *OCS:Stage* data)))
   (setq *OCS:LogTail* (append *OCS:LogTail* (list line)))
   (if (> (length *OCS:LogTail*) 40) (setq *OCS:LogTail* (cdr *OCS:LogTail*)))
-  (if (and *OCS:LogPath* (not *OCS:LogError*))
-    (progn
-      (setq problem (vl-catch-all-apply 'OCS:logWriteLine (list line)))
-      (if (vl-catch-all-error-p problem)
-        (setq problem (vl-catch-all-error-message problem)))
-      (if problem (setq *OCS:LogError* problem))))
+  (setq *OCS:LogPending* (cons line *OCS:LogPending*)
+        *OCS:LogPendingCount* (1+ *OCS:LogPendingCount*))
+  ;; 日期：2026-10-13。普通读取每 64 条落盘；失败、恢复、阶段边界和结束立即落盘。
+  (if (or (>= *OCS:LogPendingCount* 64)
+          (member event (list "RUN_BEGIN" "RUN_RESULT" "RUN_END" "RUN_TIMING" "PHASE_TIME"
+            "CALL_ERROR" "ERROR" "REPORT_ERROR" "ROLLBACK_BEGIN" "ROLLBACK_END" "RECOVERY_RESULT")))
+    (OCS:logFlush))
   nil
 )
 
@@ -181,7 +199,8 @@
 
 (defun OCS:logStart ( / result)
   (setq *OCS:LogPath* nil *OCS:LogError* nil *OCS:LogEncoding* nil
-        *OCS:LogTail* nil *OCS:LogSeq* 0 *OCS:TraceActive* T *OCS:Stage* "初始化日志")
+        *OCS:LogTail* nil *OCS:LogSeq* 0 *OCS:TraceActive* T *OCS:Stage* "初始化日志"
+        *OCS:LogPending* nil *OCS:LogPendingCount* 0)
   (setq result (vl-catch-all-apply 'OCS:logStartBody nil))
   (if (vl-catch-all-error-p result)
     (progn
@@ -217,7 +236,11 @@
     (progn
       (setq detail (vl-catch-all-apply 'OCS:logArgs (list args)))
       (if (vl-catch-all-error-p detail) (setq detail "<参数摘要不可用>"))
-      (OCS:trace "CALL_BEGIN" (list (vl-symbol-name fn) detail))))
+      (OCS:trace "CALL_BEGIN" (list (vl-symbol-name fn) detail))
+      ;; 写入接口前保存调用上下文；普通读取批量落盘。
+      (if (not (or (= (substr (strcase (vl-symbol-name fn)) 1 8) "VLA-GET-")
+                   (member (strcase (vl-symbol-name fn)) (list "VLA-ITEM" "VLA-GETFONT"))))
+        (OCS:logFlush))))
   (setq result (vl-catch-all-apply fn args))
   (if (vl-catch-all-error-p result)
     (OCS:trace "CALL_ERROR" (list (vl-symbol-name fn) (vl-catch-all-error-message result)))
@@ -1165,7 +1188,9 @@
 )
 
 (defun OCS:lstAppend (res key val)
-  (OCS:putPair res key (append (OCS:getVal res key nil) (list val)))
+  (OCS:putPair res key (if *OCS:CollectReverse*
+    (cons val (OCS:getVal res key nil))
+    (append (OCS:getVal res key nil) (list val))))
 )
 
 ;; 注释性判断：组码 1071 不含注释位；注释性在组码 70 无位，
@@ -1186,7 +1211,8 @@
 ;;; 标注/表格等生成的匿名显示块按来源分类处理。
 ;;; =====================================================================
 
-(defun OCS:CollectHosts ( / res doc blocks count i blk)
+(defun OCS:CollectHosts ( / res doc blocks count i blk key *OCS:CollectReverse*)
+  (setq *OCS:CollectReverse* T)
   (setq res (list "blocks" 0 "xrefBlocks" 0 "displayBlocks" 0
                   "entities" 0 "attribs" 0 "unknown" 0
                   "blockList" nil "skipped" nil))
@@ -1206,6 +1232,8 @@
         )
         (setq i (1+ i))
       )
+      (foreach key (list "hosts" "skipped" "blockList" "tchCandidates")
+        (setq res (OCS:putPair res key (reverse (OCS:getVal res key nil)))))
       res
     )
   )
@@ -1310,7 +1338,7 @@
 )
 (defun OCS:markSeen (res h)
   (if h
-    (OCS:putPair res "seen" (append (OCS:getVal res "seen" nil) (list h)))
+    (OCS:putPair res "seen" (cons h (OCS:getVal res "seen" nil)))
     res
   )
 )
@@ -2369,6 +2397,45 @@
 )
 
 ;; 日期：2026-10-13。最后一行显示执行结果，保留部分完成与回滚的真实状态。
+(defun OCS:elapsedSeconds (start finish / delta)
+  (if (and (numberp start) (numberp finish))
+    (progn
+      ;; 使用实数减法避免 32 位整数溢出，支持 MILLISECS 一次回绕。
+      (setq delta (- (+ 0.0 finish) start))
+      (if (< delta 0.0) (setq delta (+ delta 4294967296.0)))
+      (/ delta 1000.0))
+    nil)
+)
+
+(defun OCS:timerStart ()
+  (setq *OCS:ClockStart* (OCS:logVar "MILLISECS")
+        *OCS:PhaseStart* *OCS:ClockStart* *OCS:PhaseName* "初始化"
+        *OCS:PhaseTimes* nil)
+)
+
+(defun OCS:timerPhase (name / now seconds)
+  (setq now (OCS:logVar "MILLISECS")
+        seconds (OCS:elapsedSeconds *OCS:PhaseStart* now))
+  (if *OCS:PhaseName*
+    (progn
+      (setq *OCS:PhaseTimes* (cons (list *OCS:PhaseName* seconds) *OCS:PhaseTimes*))
+      (OCS:trace "PHASE_TIME" (list "phase" *OCS:PhaseName* "seconds" seconds))))
+  (setq *OCS:PhaseStart* now *OCS:PhaseName* name)
+)
+
+(defun OCS:timerFinish (report / seconds)
+  (OCS:timerPhase nil)
+  (setq seconds (OCS:elapsedSeconds *OCS:ClockStart* (OCS:logVar "MILLISECS")))
+  (setq report (OCS:putPair report "elapsedSeconds" seconds))
+  (setq report (OCS:putPair report "phaseTimes" (reverse *OCS:PhaseTimes*)))
+  (OCS:trace "RUN_TIMING" (list "elapsedSeconds" seconds "phaseTimes" (reverse *OCS:PhaseTimes*)))
+  (princ (if (numberp seconds)
+    (strcat "\n总耗时：" (rtos seconds 2 2) " 秒。")
+    "\n总耗时：当前 CAD 未提供可用计时值。"))
+  (princ "\nby张裕锋-20261013")
+  report
+)
+
 (defun OCS:finishMessage (report / status uncovered)
   (setq status (OCS:assocd "status" report "结果未知")
         uncovered (OCS:assocd "uncovered" report 0))
@@ -2388,6 +2455,7 @@
     (*OCS:Running* (princ "\nYJST 执行失败：上一次运行尚未结束，本次未启动。"))
     (*OCS:UndoMark* (princ "\nYJST 执行失败：上次撤销分组未能关闭，本次未启动，请先检查恢复失败明细。"))
     (T
+      (OCS:timerStart)
       (setq *OCS:Running* T *OCS:Plan* nil *OCS:TempState* nil *OCS:Wrote* nil
             *OCS:UndoAttempted* nil *OCS:FailureMessage* nil *OCS:ProbeStyle* nil)
       (princ (strcat "\nYJST v" *OCS:Version* " 开始执行。"))
@@ -2399,27 +2467,30 @@
                                        *OCS:Stage* (OCS:errorText r)))
           (if *OCS:UndoMark* (setq report (OCS:recoverReport report))))
         (setq report r))
-      (setq *OCS:Running* nil)
+      (OCS:timerPhase "结果输出")
       (setq report (OCS:putPair report "logPath" *OCS:LogPath*))
       (setq *OCS:LastReport* report)
       (OCS:trace "RUN_RESULT" report)
       (setq r (vl-catch-all-apply 'OCS:Report (list report)))
       (if (vl-catch-all-error-p r)
         (OCS:trace "REPORT_ERROR" (vl-catch-all-error-message r)))
-      (OCS:trace "RUN_END" (OCS:assocd "status" report "?"))
-      (setq *OCS:TraceActive* nil)
       (c:YJSTLOG)
-      (princ (OCS:finishMessage report))))
+      (princ (OCS:finishMessage report))
+      (setq report (OCS:timerFinish report) *OCS:LastReport* report *OCS:Report* report)
+      (OCS:trace "RUN_END" (OCS:assocd "status" report "?"))
+      (setq *OCS:TraceActive* nil *OCS:Running* nil)))
   (princ)
 )
 
 (defun OCS:mainFlow ( / pre plan)
+  (OCS:timerPhase "环境与字体预检")
   (OCS:setStage "环境与字体预检")
   (princ "\n[1/3] 检查环境与宋体字体...")
   (setq pre (OCS:Preflight))
   (if (not (OCS:assocd "ok" pre nil))
     (OCS:appendErrors (OCS:makeReport "预检失败") (OCS:problemsOf pre))
     (progn
+      (OCS:timerPhase "扫描与生成计划")
       (OCS:setStage "扫描与生成计划")
       (princ "\n[2/3] 读取原始内容并生成修改计划...")
       (setq plan (OCS:BuildPlan))
@@ -2430,6 +2501,7 @@
       (if (and (OCS:hasPlannedWrites) (not (OCS:beginUndoGroup)))
         (OCS:appendError (OCS:makeReport "预检失败") "UNDO" "无法建立撤销分组，未写入业务数据")
         (progn
+          (OCS:timerPhase "更新字体与校验")
           (OCS:setStage "写入与校验")
           (princ "\n[3/3] 更新字体并读回校验...")
           (OCS:executeWrites)))))
@@ -2471,6 +2543,7 @@
     (setq report (OCS:appendError report "RESTORE" "临时状态恢复失败")))
   (if (= (OCS:assocd "errors" report 0) 0)
     (progn
+      (OCS:timerPhase "再生与读回校验")
       (OCS:setStage "再生与校验")
       (OCS:TestFault "regen-check")
       (setq verifyRes (OCS:VerifyDrawing))
@@ -2507,14 +2580,16 @@
     (*OCS:Running* (princ "\nYJSTCHECK 未启动：上一次运行尚未结束。"))
     (*OCS:UndoMark* (princ "\nYJSTCHECK 未启动：请先处理上次恢复失败。"))
     (T
+      (OCS:timerStart)
       (setq *OCS:Running* T *OCS:CheckOnly* T)
       (princ (strcat "\nYJSTCHECK v" *OCS:Version* " 开始只读核查当前图纸的天正公开字体..."))
       (OCS:logStart)
       (OCS:trace "COMMAND" "YJSTCHECK")
+      (OCS:timerPhase "天正公开字体核查")
       (setq r (vl-catch-all-apply 'OCS:checkFlow nil))
       (setq report (if (vl-catch-all-error-p r)
         (OCS:appendError (OCS:makeReport "核查失败") *OCS:Stage* (OCS:errorText r)) r))
-      (setq *OCS:Running* nil)
+      (OCS:timerPhase "结果输出")
       (setq report (OCS:putPair report "logPath" *OCS:LogPath*)
             *OCS:LastCheckReport* report)
       (OCS:trace "RUN_RESULT" report)
@@ -2523,10 +2598,11 @@
         "　无法核验 " (itoa (OCS:assocd "tchUnknown" report 0))
         "　错误 " (itoa (OCS:assocd "errors" report 0))))
       (princ "\n仅核查公开样式与可读内容；未覆盖及核查明细见日志或 *OCS:LastCheckReport*。")
-      (OCS:trace "RUN_END" (OCS:assocd "status" report "核查失败"))
-      (setq *OCS:TraceActive* nil)
       (c:YJSTLOG)
-      (princ (strcat "\n==== YJSTCHECK " (OCS:assocd "status" report "核查失败") " ==== "))))
+      (princ (strcat "\n==== YJSTCHECK " (OCS:assocd "status" report "核查失败") " ==== "))
+      (setq report (OCS:timerFinish report) *OCS:LastCheckReport* report)
+      (OCS:trace "RUN_END" (OCS:assocd "status" report "核查失败"))
+      (setq *OCS:TraceActive* nil *OCS:Running* nil)))
   (princ)
 )
 
