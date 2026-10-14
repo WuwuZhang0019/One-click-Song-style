@@ -72,8 +72,8 @@
 ;;   (setq res (OCS:addProblem res "error" "Blocks 集合接口不可用")))
 
 ;;; ------------------------- 全局状态 -------------------------
-(setq *OCS:Version*      "0.2.16")
-(setq *OCS:DiagnosticsVersion* "2026-10-14-field-font-v8")
+(setq *OCS:Version*      "0.2.17")
+(setq *OCS:DiagnosticsVersion* "2026-10-14-field-font-v9")
 (setq *OCS:TableContentCounts* nil)
 (setq *OCS:ScanContext* nil)
 (setq *OCS:CollectReverse* nil)
@@ -2588,10 +2588,10 @@
 
 (defun c:YJSTFIX ()
   ;; 日期：2026-10-14。独立命令避开工具集同名 .NET YJST 入口；被旧版覆盖时拒绝执行。
-  (if (and (equal *OCS:Version* "0.2.16")
-           (equal *OCS:DiagnosticsVersion* "2026-10-14-field-font-v8"))
+  (if (and (equal *OCS:Version* "0.2.17")
+           (equal *OCS:DiagnosticsVersion* "2026-10-14-field-font-v9"))
     (c:YJST)
-    (princ "\n当前宋体脚本已被旧版覆盖。请重新 APPLOAD v0.2.16 修复文件，然后输入 YJSTFIX。"))
+    (princ "\n当前宋体脚本已被旧版覆盖。请重新 APPLOAD v0.2.17 修复文件，然后输入 YJSTFIX。"))
   (princ)
 )
 
@@ -3291,14 +3291,30 @@
 )
 
 (defun OCS:fieldDefinition (data / section refs fragments p)
-  ;; 日期：2026-10-14。只比较字段身份、公式代码和子字段关联；求值缓存可由 CAD 自动刷新。
+  ;; 日期：2026-10-14。330 可属于 ACAD_REACTORS；表格关联另从单元格 344 核验。
   (setq section (OCS:tchSection data "AcDbField") refs nil fragments nil)
   (foreach p section
     (cond ((= (car p) 360) (setq refs (cons p refs)))
           ((= (car p) 3) (setq fragments (cons p fragments)))))
-  (list (assoc 0 data) (assoc 5 data) (assoc 330 data)
+  (list (assoc 0 data) (assoc 5 data)
         (assoc 1 section) (assoc 2 section) (assoc 90 section)
         (reverse refs) (reverse fragments))
+)
+
+(defun OCS:fieldTableLinkOk (edit / table row col cols cells cell roots p ref ent)
+  (setq table (OCS:assocd "table" edit nil)
+        row (OCS:assocd "row" edit 0) col (OCS:assocd "col" edit 0)
+        cols (OCS:requireProp table 'Columns)
+        cells (OCS:tableDxfCells (entget (vlax-vla-object->ename table)))
+        cell (nth (+ (* row cols) col) cells) roots nil)
+  (foreach p cell (if (= (car p) 344) (setq roots (cons (cdr p) roots))))
+  (if (/= (length roots) 1) nil
+    (progn
+      (setq ref (car roots) ent (if (OCS:stringp ref) (handent ref) ref))
+      (and ent
+           (equal (OCS:assocd 5 (entget ent) nil) (OCS:assocd "handle" edit nil))
+           (= (OCS:assocd "fieldId" edit 0)
+              (OCS:mustCall 'vla-GetFieldId2 (list table row col 0))))))
 )
 
 (defun OCS:fieldValueSignature (data / section cache dtype)
@@ -3319,20 +3335,23 @@
           "currentCode" (if current (car (car current)) nil)) nil)
 )
 
-(defun OCS:applyFieldFontEdits ( / edit ent before current childCurrent after r count tables table handle updated)
+(defun OCS:applyFieldFontEdits ( / edit ent before current childCurrent after r count tables table handle updated definitionOk childOk valueOk linkOk)
   (setq count 0 tables nil updated nil)
   (foreach edit (OCS:assocd "fieldEdits" *OCS:Plan* nil)
     (setq ent (OCS:assocd "ent" edit nil) before (OCS:assocd "before" edit nil)
           current (entget ent) childCurrent (entget (OCS:assocd "childEnt" edit nil)))
+    (setq definitionOk (equal (OCS:fieldDefinition before) (OCS:fieldDefinition current))
+          childOk (equal (OCS:fieldDefinition (OCS:assocd "childBefore" edit nil))
+                         (OCS:fieldDefinition childCurrent))
+          valueOk (equal (OCS:fieldValueSignature (OCS:assocd "childBefore" edit nil))
+                         (OCS:fieldValueSignature childCurrent) 1e-9)
+          linkOk (OCS:fieldTableLinkOk edit))
     (if (not (equal current before))
       (OCS:trace "FIELD_PREWRITE_DRIFT" (list "handle" (OCS:assocd "handle" edit "?")
         "firstDifference" (OCS:firstDxfDifference before current)
-        "definitionSame" (equal (OCS:fieldDefinition before) (OCS:fieldDefinition current)))))
-    (if (or (not (equal (OCS:fieldDefinition before) (OCS:fieldDefinition current)))
-            (not (equal (OCS:fieldDefinition (OCS:assocd "childBefore" edit nil))
-                        (OCS:fieldDefinition childCurrent)))
-            (not (equal (OCS:fieldValueSignature (OCS:assocd "childBefore" edit nil))
-                        (OCS:fieldValueSignature childCurrent) 1e-9)))
+        "definitionSame" definitionOk "childSame" childOk
+        "valueSame" valueOk "tableLinkSame" linkOk)))
+    (if (not (and definitionOk childOk valueOk linkOk))
       (OCS:fail (strcat "FIELD " (OCS:assocd "handle" edit "?")
         " 的公式、关联或显示值在写入前变化，停止修改")))
     (setq after (OCS:fieldReplaceCode current (OCS:assocd "afterCode" edit "")))
@@ -3360,7 +3379,7 @@
   (list "changed" count)
 )
 
-(defun OCS:readbackFieldFontEdits ( / ok edit current childCurrent definitionOk childOk valueOk idOk layoutOk)
+(defun OCS:readbackFieldFontEdits ( / ok edit current childCurrent definitionOk childOk valueOk linkOk layoutOk)
   (setq ok T)
   (foreach edit (OCS:assocd "fieldEdits" *OCS:Plan* nil)
     (setq current (entget (OCS:assocd "ent" edit nil))
@@ -3370,17 +3389,15 @@
                          (OCS:fieldDefinition childCurrent))
           valueOk (equal (OCS:fieldValueSignature (OCS:assocd "childBefore" edit nil))
                          (OCS:fieldValueSignature childCurrent) 1e-9)
-          idOk (= (OCS:assocd "fieldId" edit 0)
-                  (OCS:mustCall 'vla-GetFieldId2 (list (OCS:assocd "table" edit nil)
-                    (OCS:assocd "row" edit 0) (OCS:assocd "col" edit 0) 0)))
+          linkOk (OCS:fieldTableLinkOk edit)
           layoutOk (equal (OCS:assocd "layout" edit nil)
                           (OCS:tableLayout (OCS:assocd "table" edit nil)
                             (OCS:requireProp (OCS:assocd "table" edit nil) 'Rows)
                             (OCS:requireProp (OCS:assocd "table" edit nil) 'Columns)) 1e-9))
     (OCS:trace "FIELD_FONT_READBACK" (list "handle" (OCS:assocd "handle" edit "?")
       "definitionOk" definitionOk "childOk" childOk "valueOk" valueOk
-      "fieldIdOk" idOk "layoutOk" layoutOk))
-    (if (not (and definitionOk childOk valueOk idOk layoutOk))
+      "tableLinkOk" linkOk "layoutOk" layoutOk))
+    (if (not (and definitionOk childOk valueOk linkOk layoutOk))
       (setq ok nil)))
   ok
 )

@@ -166,7 +166,7 @@ class VerificationRuleTests(unittest.TestCase):
                          next(p.cdr for p in self.cad.records['11ADE']['dxf'] if p.car == 2))
         self.assertIn('table-recompute', self.cad.events)
 
-    def test_style_write_refreshes_field_cache_before_font_write(self):
+    def test_style_write_refreshes_field_reactor_and_cache_before_font_write(self):
         self.single_field()
         root = self.cad.records['11ADE']
         child = deepcopy(self.cad.records['11ADF'])
@@ -178,6 +178,7 @@ class VerificationRuleTests(unittest.TestCase):
         def refresh_cache(obj, *args):
             result = setfont(obj, *args)
             if obj is style:
+                next(p for p in root['dxf'] if p.car == 330).cdr = 'CAD refreshed reactor'
                 root['dxf'].append(Pair(999, 'CAD refreshed field cache'))
             return result
 
@@ -218,6 +219,26 @@ class VerificationRuleTests(unittest.TestCase):
         self.assertEqual('失败已回滚', self.value('status'))
         self.assertEqual(0, self.value('recoverFailed'))
         self.assertEqual(before, self.cad.records)
+
+    def test_changed_table_field_reference_still_stops_and_rolls_back(self):
+        table = self.single_field()
+        self.field_value('11ADE', 2, r'{\Fsimplex,hztxt|c134;%<\_FldIdx 0>%}')
+        before = deepcopy(table)
+        style = self.cad.styles['ICDA-STYLE1']
+        style['font'] = ['Arial', TRUE, FALSE, 0, 34]
+        setfont = self.rt.native['vla-setfont']
+
+        def change_link(obj, *args):
+            result = setfont(obj, *args)
+            if obj is style:
+                self.cad.put_dxf(table, 344, 'OTHER_FIELD')
+            return result
+
+        self.rt.native['vla-setfont'] = change_link
+        self.rt.call('c:YJSTFIX', [])
+        self.assertEqual('失败已回滚', self.value('status'))
+        self.assertEqual(0, self.value('recoverFailed'))
+        self.assertEqual(before, table)
 
     def test_field_font_write_failure_rolls_back_without_detaching_field(self):
         self.single_field()
