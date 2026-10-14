@@ -1,4 +1,4 @@
-"""日期：2026-10-13。排查日志、失败隔离与专业引线分类回归。"""
+"""日期：2026-10-14。排查日志、块引用异常证据与专业引线分类回归。"""
 from copy import deepcopy
 import json
 from pathlib import Path
@@ -6,7 +6,7 @@ from tempfile import TemporaryDirectory
 import unittest
 
 from cad_fixture import CadFixture
-from lisp_eval import Runtime, truth
+from lisp_eval import Pair, Runtime, truth
 
 SOURCE = Path(__file__).resolve().parent.parent / 'one-click-simsun.lsp'
 
@@ -176,6 +176,105 @@ class DiagnosticLoggingTests(unittest.TestCase):
         for event in ('ROLLBACK_BEGIN', 'ROLLBACK_END', 'RECOVERY_RESULT', 'RUN_END'):
             self.assertIn(event, self.log())
         self.assertEqual(1, self.cad.events.count('undo'))
+
+    def bad_block_ref(self):
+        obj = self.cad.block_ref()
+        obj['Handle'] = 'D5'
+        self.name_reads = 0
+        original_name = self.rt.native['vla-get-name']
+        def name(value):
+            if value is obj:
+                self.name_reads += 1
+                raise RuntimeError('Automation 错误。 空对象 ID')
+            return original_name(value)
+        self.rt.native['vla-get-name'] = name
+        return obj
+
+    def test_block_name_failure_logs_only_dxf_without_reprobing_object(self):
+        obj = self.bad_block_ref()
+        before = deepcopy(self.cad.tracked())
+        entity_data = [Pair(0, 'INSERT'), Pair(5, 'D5'), Pair(2, 'ATTR_BLOCK'),
+                       Pair(8, 'A-综合-建筑综合三'), Pair(330, 'owner-B1'),
+                       Pair(100, 'AcDbBlockReference'), Pair(10, [1, 2, 3])]
+        native_entget = self.rt.native['entget']
+        def entget(entity, apps=None):
+            records = {'entity-D5': entity_data,
+                       'owner-B1': [Pair(0, 'BLOCK_RECORD'), Pair(5, 'B1'), Pair(2, '*Model_Space')],
+                       'definition': [Pair(0, 'BLOCK'), Pair(2, 'ATTR_BLOCK'), Pair(70, 0)]}
+            return records[entity] if isinstance(entity, str) and entity in records else native_entget(entity, apps)
+        native_ename = self.rt.native['vlax-vla-object->ename']
+        native_lookup = self.rt.native['tblobjname']
+        self.rt.native.update({
+            'vlax-vla-object->ename': lambda value: 'entity-D5' if value is obj else native_ename(value),
+            'handent': lambda handle: 'entity-D5' if handle == 'D5' else None,
+            'entget': entget,
+            'vlax-object-released-p': lambda value: None,
+            'vlax-erased-p': lambda value: None,
+            'tblobjname': lambda table, name: 'definition' if table == 'BLOCK' and name == 'ATTR_BLOCK' else native_lookup(table, name),
+            'tblsearch': lambda table, name: [Pair(2, name), Pair(70, 0)],
+        })
+        native_object = self.rt.native['vlax-ename->vla-object']
+        self.rt.native['vlax-ename->vla-object'] = lambda entity: dict(Name='ATTR_BLOCK') if entity == 'entity-D5' else native_object(entity)
+        self.call('c:YJST')
+        self.assertEqual('预检失败', self.value('status'))
+        self.assertIn('vla-get-Name：Automation 错误。 空对象 ID', str(self.value('errorDetail')))
+        self.assertEqual(before, self.cad.tracked())
+        self.assertEqual([], self.cad.events)
+        rows = [json.loads(line) for line in self.log().splitlines()]
+        begin = next(row for row in rows if row[2] == 'BLOCKREF_DIAG_BEGIN')
+        self.assertIn('D5', str(begin[4]))
+        self.assertIn('index', str(begin[4]))
+        self.assertIn('2026-10-14-font-verify-v5', str(rows[0]))
+        dxf = [row for row in rows if row[2] == 'BLOCKREF_DIAG_DXF']
+        self.assertEqual(1, len(dxf))
+        self.assertIn('ATTR_BLOCK', str(dxf))
+        self.assertIn('AcDbBlockReference', str(dxf))
+        self.assertNotIn('[1, 2, 3]', str(dxf))  # 排除几何数据。
+        self.assertEqual(1, self.name_reads)
+        self.assertNotIn('object.reacquired', self.log())
+        self.assertNotIn('object.released', self.log())
+        self.assertIn('activeXProbes', str(begin[4]))
+        self.assertIn('disabled', str(begin[4]))
+        dxf_begin = next(row for row in rows if row[2] == 'BLOCKREF_DIAG_DXF_BEGIN')
+        self.assertLess(rows.index(dxf_begin), rows.index(dxf[0]))
+        self.assertTrue(any(row[2] == 'BLOCKREF_DIAG_END' for row in rows))
+        self.assertEqual('RUN_END', rows[-1][2])
+        self.assertEqual(set(), self.cad.logs.handles)
+
+    def test_diagnostic_probe_errors_do_not_replace_original_error(self):
+        self.bad_block_ref()
+        handent = self.rt.native['handent']
+        lookups = []
+        def lookup(handle):
+            lookups.append(handle)
+            if len(lookups) > 1:
+                raise RuntimeError('handle lookup failed')
+            return handent(handle)
+        self.rt.native['handent'] = lookup
+        self.call('c:YJST')
+        self.assertEqual('预检失败', self.value('status'))
+        self.assertIn('空对象 ID', str(self.value('errorDetail')))
+        self.assertNotIn('handle lookup failed', str(self.value('errorDetail')))
+        self.assertIn('handle lookup failed', self.log())
+        self.assertIn('unavailable', self.log())
+        self.assertIn('BLOCKREF_DIAG_END', self.log())
+        self.assertEqual([], self.cad.events)
+
+    def test_whole_diagnostic_failure_keeps_original_error_and_run_end(self):
+        self.bad_block_ref()
+        self.rt.native['ocs:blockrefdiagnostic'] = lambda *args: (_ for _ in ()).throw(RuntimeError('diagnostic failed'))
+        self.call('c:YJST')
+        self.assertIn('空对象 ID', str(self.value('errorDetail')))
+        self.assertIn('BLOCKREF_DIAG_ERROR', self.log())
+        self.assertIn('diagnostic failed', self.log())
+        self.assertIn('RUN_END', self.log())
+        self.assertEqual([], self.cad.events)
+
+    def test_healthy_block_does_not_trigger_failure_diagnostics(self):
+        self.cad.block_ref()
+        self.call('c:YJST')
+        self.assertEqual('已完成', self.value('status'))
+        self.assertNotIn('BLOCKREF_DIAG_BEGIN', self.log())
 
 
 if __name__ == '__main__':

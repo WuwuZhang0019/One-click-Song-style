@@ -1,5 +1,7 @@
 """build_gb2312.py - 把 UTF-8 开发源码构建为 GB2312 交付插件。
 
+日期：2026-10-14。
+
 依据 docs/GB2312编码修复与加载复测说明.md 第 4 节：
 
 - 源码严格按 UTF-8 解码（允许去 BOM），目标严格按 gb2312 编码；
@@ -17,20 +19,43 @@ from __future__ import annotations
 from datetime import datetime
 from hashlib import sha256
 from pathlib import Path
+import re
 
 # 需要纳入同一构建与校验流程的实际加载文件清单（入口 + 辅助文件）。
 # 只有被 CAD 实际 LOAD/APPLOAD 的文件才放入 output/gb2312。
-LOAD_FILES = ["one-click-simsun.lsp", "tests/native/ocs-native-checks.lsp"]
+LOAD_FILES = ["one-click-simsun.lsp", "tests/native/ocs-native-checks.lsp",
+              "tests/native/YJST-D5-CHECK-20261014.lsp", "tests/native/YJST-D5-DXF-20261014.lsp"]
 
 
-def convert_one(source: Path, target: Path) -> int:
+def command_parts(text: str) -> tuple[str, str, str]:
+    """日期：2026-10-14。从唯一主源码生成手动 YJSTFIX 入口，保留恢复状态预检。"""
+    version = re.search(r'\(setq\s+\*OCS:Version\*\s+"([^"]+)"', text)
+    dated = re.search(r'^;;; 日期：(\d{4}-\d{2}-\d{2})', text, re.MULTILINE)
+    if not version or not dated:
+        raise ValueError('COMMAND_SOURCE_METADATA_MISSING')
+    prefix = f';;; 修复版独立命令：加载仅注册，输入 YJSTFIX 执行。\n;;; 日期：{dated.group(1)}\n'
+    prefix += r'''(if (or (and (boundp '*OCS:Running*) *OCS:Running*)
+            (and (boundp '*OCS:UndoMark*) *OCS:UndoMark*))
+  (progn
+    (princ "\n存在未结束操作或未关闭撤销分组。本次未加载修复代码，请先处理原恢复状态。")
+    (exit)))
+'''
+    suffix = r'''
+;;; 本文件由 build_gb2312.py 生成；加载完成后手动输入 YJSTFIX 转换当前图纸。
+(princ "\n修复版独立命令已就绪：YJSTFIX。")
+(princ)
+'''
+    return version.group(1), prefix, suffix
+
+
+def convert_one(source: Path, target: Path, prefix: str = '', suffix: str = '') -> int:
     try:
         raw = source.read_bytes()
     except OSError as exc:
         print(f"SOURCE_ERROR: {source.resolve()}: {exc}")
         return 1
     try:
-        text = raw.decode("utf-8-sig", errors="strict")
+        text = prefix + raw.decode("utf-8-sig", errors="strict") + suffix
     except UnicodeDecodeError as exc:
         print(f"SOURCE_ERROR: {source.resolve()}: {exc}")
         return 1
@@ -75,6 +100,20 @@ def main() -> int:
         target = outdir / name
         print(f"SOURCE: {source.resolve()}")
         failed += convert_one(source, target)
+    if not failed:
+        source = root / 'one-click-simsun.lsp'
+        version, prefix, suffix = command_parts(source.read_text(encoding='utf-8-sig'))
+        target = outdir / f'YJSTFIX-v{version}.lsp'
+        print(f"COMMAND_SOURCE: {source.resolve()}")
+        failed += convert_one(source, target, prefix, suffix)
+        # 日期：2026-10-14。撤回上一轮已交付的自动执行入口，避免旧链接仍自动转换。
+        retired = outdir / 'RUN-YJST-v0.2.12.lsp'
+        if not failed and retired.exists():
+            notice = (';;; 日期：2026-10-14\n;;; 自动转换入口已停用。\n'
+                      f'(princ "\\n此自动转换入口已停用。请 APPLOAD YJSTFIX-v{version}.lsp，输入 YJSTFIX 执行。")\n'
+                      '(princ)\n')
+            retired.write_bytes(notice.encode('gb2312', errors='strict'))
+            print(f"RETIRED_AUTORUN: {retired.resolve()}")
     if failed:
         print(f"BUILD FAILED: {failed} file(s)")
         return 1

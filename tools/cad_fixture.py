@@ -1,4 +1,4 @@
-"""日期：2026-10-13。最小 CAD 数据替身，仅检验 LISP 调用衔接与数据保持。"""
+"""日期：2026-10-14。最小 CAD 数据替身，仅检验 LISP 调用衔接与数据保持。"""
 from copy import deepcopy
 import io
 import json
@@ -68,6 +68,7 @@ class CadFixture:
     def __init__(self, runtime):
         self.rt = runtime
         self.styles = {}
+        self.records = {}  # 日期：2026-10-14。字段 DXF 对象仅用于只读 handent/entget 回归。
         self.styles['Standard'] = self.style('Standard', 'txt.shx', 'hztxt.shx')
         self.styles['XREF|Text'] = self.style('XREF|Text', 'txt.shx', '', flags=16)
         self.styles['Shape'] = self.style('Shape', 'shape.shx', '', flags=1)
@@ -99,7 +100,7 @@ class CadFixture:
             'vla-fieldcode': lambda obj: obj['TextString'],
             'exit': self.exit,
             'tblobjname': lambda table, name: name if name in self.styles else None,
-            'tblnext': self.tblnext, 'entget': self.entget, 'vlax-vla-object->ename': lambda obj: obj, 'dictsearch': lambda obj, key: obj.get(key),
+            'tblnext': self.tblnext, 'entget': self.entget, 'handent': self.handent, 'vlax-vla-object->ename': lambda obj: obj, 'dictsearch': lambda obj, key: obj.get(key),
             'entmake': self.entmake, 'entmod': self.entmod,
             'vlax-ename->vla-object': lambda name: name if isinstance(name, dict) else self.styles[name],
             'vla-delete': lambda obj: self.styles.pop(obj['Name']),
@@ -167,11 +168,24 @@ class CadFixture:
         self.blocks[0]['items'].append(obj)
         return obj
 
+    def handent(self, handle):
+        if handle in self.records:
+            return self.records[handle]
+        for block in self.blocks:
+            if block.get('Handle') == handle:
+                return block
+            for obj in block['items']:
+                for candidate in [obj] + obj.get('attributes', []) + obj.get('constants', []):
+                    if candidate.get('Handle') == handle:
+                        return candidate
+        return None
+
     def block_ref(self, attributes=(), constants=()):
         self.blocks.append(dict(Name='ATTR_BLOCK', Handle='B4', IsXRef=FALSE, items=[]))
         obj = self.entity('AcDbBlockReference', 'REF1', '')
         obj.update(Name='ATTR_BLOCK', HasAttributes=TRUE,
                    attributes=list(attributes), constants=list(constants))
+        obj['dxf'] = [Pair(0, 'INSERT'), Pair(5, obj['Handle']), Pair(2, obj['Name']), Pair(8, obj['Layer'])]
         return self.add(obj)
 
     def attribute(self, handle, text):
@@ -184,6 +198,9 @@ class CadFixture:
         obj.update(Rows=1, Columns=1, RegenerateTableSuppressed=FALSE,
                    heights=[10.0], widths=[50.0],
                    cells=[[dict(contents=contents or [dict(text=r'{\fArial;表格}')])]])
+        obj['dxf'] = [Pair(0, 'ACAD_TABLE'), Pair(100, 'AcDbTable'), Pair(280, 0),
+                      Pair(91, 1), Pair(92, 1), Pair(171, 1)]
+        obj['dxf'] += [Pair(301, 'CELL_VALUE') for _ in obj['cells'][0][0]['contents']]
         return self.add(obj)
 
     def merged(self, obj, row, col, *names):

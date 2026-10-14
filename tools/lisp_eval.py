@@ -1,4 +1,4 @@
-"""日期：2026-10-13。执行项目 LISP 源码的有限测试解释器，不能替代原生 CAD。
+"""日期：2026-10-14。执行项目 LISP 源码的有限测试解释器，不能替代原生 CAD。
 
 采用 AutoLISP 动态作用域和真值语义（0 与空串为真）。CAD 接口由测试注入；
 未实现的函数直接失败，禁止默认为成功。
@@ -85,13 +85,13 @@ class Runtime:
             'atom': lambda a: not isinstance(a, (list, Pair)) or a == [],
             'listp': lambda a: a is None or isinstance(a, (list, Pair)),
             'numberp': lambda a: type(a) in (int, float),
-            'type': lambda a: Symbol('str' if type(a) is str else 'list' if isinstance(a, (list, Pair)) else 'sym' if isinstance(a, Symbol) or a is None else 'int'),
+            'type': lambda a: None if a is None else Symbol('str' if type(a) is str else 'list' if isinstance(a, (list, Pair)) else 'sym' if isinstance(a, Symbol) else 'int'),
             'strlen': len, 'strcat': lambda *a: ''.join(a),
             'substr': lambda s, i, n=None: s[i-1:] if n is None else s[i-1:i-1+n],
             'strcase': lambda s, lower=None: s.lower() if truth(lower) else s.upper(),
             'itoa': str, 'rtos': lambda n, *a: str(n), 'fix': int,
             'vl-position': lambda x, a: a.index(x) if a and x in a else None,
-            'vl-symbol-name': lambda x: str(x).upper(), 'read': lambda s: read(s)[0],
+            'vl-symbol-name': self.symbol_name, 'read': lambda s: read(s)[0],
             'vl-load-com': lambda: None,
             'vl-catch-all-error-p': lambda a: isinstance(a, Exception),
             'vl-catch-all-error-message': self.error_message,
@@ -104,6 +104,12 @@ class Runtime:
         }
         for name, op in [('=', operator.eq), ('/=', operator.ne), ('<', operator.lt), ('>', operator.gt), ('<=', operator.le), ('>=', operator.ge)]:
             self.native[name] = lambda *a, op=op: all(op(x, y) for x, y in zip(a, a[1:]))
+
+    @staticmethod
+    def symbol_name(value):
+        if not isinstance(value, Symbol):
+            raise TypeError('bad argument type: symbolp ' + ('nil' if value is None else repr(value)))
+        return str(value).upper()
 
     @staticmethod
     def error_message(value):

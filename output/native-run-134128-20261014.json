@@ -1,0 +1,437 @@
+{
+  "date": "2026-10-14",
+  "source": "C:\\Users\\Zyf\\Downloads\\YJST-20261014.13412800.log",
+  "sourceBytes": 29866188,
+  "sourceSha256": "1eeb58947c04ba34dcaef21e18710a4cf91ba232960ce9ede8fc2892a202a0a2",
+  "sourceEncoding": "CP936 (CAD-legacy, strict decoding)",
+  "recordCount": 252591,
+  "runBegin": {
+    "version": "0.2.12",
+    "date": "2026-10-14",
+    "cdate": "20261014.13412800",
+    "encoding": "CAD-legacy",
+    "diagnostics": "2026-10-14-blockref-table-v4"
+  },
+  "runResult": {
+    "status": "部分完成",
+    "errors": 0,
+    "recoverFailed": 0,
+    "uncovered": 67,
+    "stylesScanned": 34,
+    "stylesModified": 0,
+    "stylesShape": 2,
+    "hostsScanned": 5487,
+    "fontRunsChanged": 0,
+    "attribs": 2481,
+    "tableContents": 0,
+    "blocks": 235,
+    "displayBlocks": 228,
+    "cadver": "23.1s (LMS Tech)"
+  },
+  "runEnd": "部分完成",
+  "timing": {
+    "elapsedSeconds": 87.406,
+    "phaseTimes": [
+      [
+        "初始化",
+        0.046
+      ],
+      [
+        "环境与字体预检",
+        0.032
+      ],
+      [
+        "扫描与生成计划",
+        86.109
+      ],
+      [
+        "更新字体与校验",
+        0.172
+      ],
+      [
+        "再生与读回校验",
+        0.781
+      ],
+      [
+        "结果输出",
+        0.266
+      ]
+    ]
+  },
+  "detailReasonCounts": {
+    "PROXY_OR_PRO": 47,
+    "DISPLAY_CACHE": 228,
+    "PROTECTED_CONTENT": 20
+  },
+  "professionalClasses": {
+    "TDbECabletry": 25,
+    "TDbEFitting": 22
+  },
+  "protectedCells": [
+    [
+      "PROTECTED_CONTENT",
+      "1134B",
+      "单元格[0,2]：链接、锁定、字段或块内容保持原状"
+    ],
+    [
+      "PROTECTED_CONTENT",
+      "1134B",
+      "单元格[0,4]：链接、锁定、字段或块内容保持原状"
+    ],
+    [
+      "PROTECTED_CONTENT",
+      "11356",
+      "单元格[0,2]：链接、锁定、字段或块内容保持原状"
+    ],
+    [
+      "PROTECTED_CONTENT",
+      "11356",
+      "单元格[0,4]：链接、锁定、字段或块内容保持原状"
+    ],
+    [
+      "PROTECTED_CONTENT",
+      "1193D",
+      "单元格[0,2]：链接、锁定、字段或块内容保持原状"
+    ],
+    [
+      "PROTECTED_CONTENT",
+      "1193D",
+      "单元格[0,4]：链接、锁定、字段或块内容保持原状"
+    ],
+    [
+      "PROTECTED_CONTENT",
+      "11947",
+      "单元格[0,2]：链接、锁定、字段或块内容保持原状"
+    ],
+    [
+      "PROTECTED_CONTENT",
+      "11947",
+      "单元格[0,4]：链接、锁定、字段或块内容保持原状"
+    ],
+    [
+      "PROTECTED_CONTENT",
+      "11950",
+      "单元格[0,2]：链接、锁定、字段或块内容保持原状"
+    ],
+    [
+      "PROTECTED_CONTENT",
+      "11950",
+      "单元格[0,4]：链接、锁定、字段或块内容保持原状"
+    ],
+    [
+      "PROTECTED_CONTENT",
+      "11957",
+      "单元格[0,2]：链接、锁定、字段或块内容保持原状"
+    ],
+    [
+      "PROTECTED_CONTENT",
+      "11957",
+      "单元格[0,4]：链接、锁定、字段或块内容保持原状"
+    ],
+    [
+      "PROTECTED_CONTENT",
+      "1195E",
+      "单元格[0,2]：链接、锁定、字段或块内容保持原状"
+    ],
+    [
+      "PROTECTED_CONTENT",
+      "1195E",
+      "单元格[0,4]：链接、锁定、字段或块内容保持原状"
+    ],
+    [
+      "PROTECTED_CONTENT",
+      "11ACB",
+      "单元格[0,2]：链接、锁定、字段或块内容保持原状"
+    ],
+    [
+      "PROTECTED_CONTENT",
+      "11ACB",
+      "单元格[0,4]：链接、锁定、字段或块内容保持原状"
+    ],
+    [
+      "PROTECTED_CONTENT",
+      "11ACD",
+      "单元格[0,2]：链接、锁定、字段或块内容保持原状"
+    ],
+    [
+      "PROTECTED_CONTENT",
+      "11ACD",
+      "单元格[0,4]：链接、锁定、字段或块内容保持原状"
+    ],
+    [
+      "PROTECTED_CONTENT",
+      "11ACF",
+      "单元格[0,2]：链接、锁定、字段或块内容保持原状"
+    ],
+    [
+      "PROTECTED_CONTENT",
+      "11ACF",
+      "单元格[0,4]：链接、锁定、字段或块内容保持原状"
+    ]
+  ],
+  "tableCounts": [
+    {
+      "handle": "1134B",
+      "rows": 1,
+      "cols": 5,
+      "source": "DXF_CELL_VALUE",
+      "status": "known",
+      "cells": 5
+    },
+    {
+      "handle": "11356",
+      "rows": 1,
+      "cols": 5,
+      "source": "DXF_CELL_VALUE",
+      "status": "known",
+      "cells": 5
+    },
+    {
+      "handle": "1193D",
+      "rows": 1,
+      "cols": 5,
+      "source": "DXF_CELL_VALUE",
+      "status": "known",
+      "cells": 5
+    },
+    {
+      "handle": "11947",
+      "rows": 1,
+      "cols": 5,
+      "source": "DXF_CELL_VALUE",
+      "status": "known",
+      "cells": 5
+    },
+    {
+      "handle": "11950",
+      "rows": 1,
+      "cols": 5,
+      "source": "DXF_CELL_VALUE",
+      "status": "known",
+      "cells": 5
+    },
+    {
+      "handle": "11957",
+      "rows": 1,
+      "cols": 5,
+      "source": "DXF_CELL_VALUE",
+      "status": "known",
+      "cells": 5
+    },
+    {
+      "handle": "1195E",
+      "rows": 1,
+      "cols": 5,
+      "source": "DXF_CELL_VALUE",
+      "status": "known",
+      "cells": 5
+    },
+    {
+      "handle": "11ACB",
+      "rows": 1,
+      "cols": 5,
+      "source": "DXF_CELL_VALUE",
+      "status": "known",
+      "cells": 5
+    },
+    {
+      "handle": "11ACD",
+      "rows": 1,
+      "cols": 5,
+      "source": "DXF_CELL_VALUE",
+      "status": "known",
+      "cells": 5
+    },
+    {
+      "handle": "11ACF",
+      "rows": 1,
+      "cols": 5,
+      "source": "DXF_CELL_VALUE",
+      "status": "known",
+      "cells": 5
+    }
+  ],
+  "readableTableContentCounts": [
+    {
+      "row": 0,
+      "col": 0,
+      "count": 1
+    },
+    {
+      "row": 0,
+      "col": 1,
+      "count": 1
+    },
+    {
+      "row": 0,
+      "col": 3,
+      "count": 1
+    },
+    {
+      "row": 0,
+      "col": 0,
+      "count": 1
+    },
+    {
+      "row": 0,
+      "col": 1,
+      "count": 1
+    },
+    {
+      "row": 0,
+      "col": 3,
+      "count": 1
+    },
+    {
+      "row": 0,
+      "col": 0,
+      "count": 1
+    },
+    {
+      "row": 0,
+      "col": 1,
+      "count": 1
+    },
+    {
+      "row": 0,
+      "col": 3,
+      "count": 1
+    },
+    {
+      "row": 0,
+      "col": 0,
+      "count": 1
+    },
+    {
+      "row": 0,
+      "col": 1,
+      "count": 1
+    },
+    {
+      "row": 0,
+      "col": 3,
+      "count": 1
+    },
+    {
+      "row": 0,
+      "col": 0,
+      "count": 1
+    },
+    {
+      "row": 0,
+      "col": 1,
+      "count": 1
+    },
+    {
+      "row": 0,
+      "col": 3,
+      "count": 1
+    },
+    {
+      "row": 0,
+      "col": 0,
+      "count": 1
+    },
+    {
+      "row": 0,
+      "col": 1,
+      "count": 1
+    },
+    {
+      "row": 0,
+      "col": 3,
+      "count": 1
+    },
+    {
+      "row": 0,
+      "col": 0,
+      "count": 1
+    },
+    {
+      "row": 0,
+      "col": 1,
+      "count": 1
+    },
+    {
+      "row": 0,
+      "col": 3,
+      "count": 1
+    },
+    {
+      "row": 0,
+      "col": 0,
+      "count": 1
+    },
+    {
+      "row": 0,
+      "col": 1,
+      "count": 1
+    },
+    {
+      "row": 0,
+      "col": 3,
+      "count": 1
+    },
+    {
+      "row": 0,
+      "col": 0,
+      "count": 1
+    },
+    {
+      "row": 0,
+      "col": 1,
+      "count": 1
+    },
+    {
+      "row": 0,
+      "col": 3,
+      "count": 1
+    },
+    {
+      "row": 0,
+      "col": 0,
+      "count": 1
+    },
+    {
+      "row": 0,
+      "col": 1,
+      "count": 1
+    },
+    {
+      "row": 0,
+      "col": 3,
+      "count": 1
+    }
+  ],
+  "tableContentCountUnknownEvents": 0,
+  "afterRegenStyles": 34,
+  "afterRegenFontFamilies": {
+    "宋体": 34
+  },
+  "tableTextReadCalls": 30,
+  "eventTypeCounts": {
+    "RUN_BEGIN": 1,
+    "ENV": 8,
+    "PHASE_TIME": 6,
+    "STAGE": 57486,
+    "CALL_BEGIN": 85196,
+    "CALL_OK": 85196,
+    "ENTITY": 24217,
+    "UNSUPPORTED_OBJECT": 47,
+    "TABLE_CONTENT_COUNTS": 10,
+    "TABLE_CELL": 50,
+    "TABLE_CONTENT_COUNT": 30,
+    "PLAN_READY": 1,
+    "FONT_STATE": 204,
+    "BIGFONT_CHECK": 136,
+    "RUN_RESULT": 1,
+    "RUN_TIMING": 1,
+    "RUN_END": 1
+  },
+  "limits": [
+    "本次没有新增字体写入，不能证明写入后读回与一次 U 撤销。",
+    "未覆盖专业对象和受保护单元格的字体未全面核验。",
+    "PROTECTED_CONTENT 的本条日志不能进一步区分具体状态位或内容类型。",
+    "DISPLAY_CACHE 仅记跳过明细，不计入 67 项未覆盖。"
+  ]
+}

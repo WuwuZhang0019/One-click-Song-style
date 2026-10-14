@@ -1,0 +1,96 @@
+{
+  "date": "2026-10-14",
+  "source": "电施-春秋剧场09.30.dxf",
+  "tables": [
+    {
+      "handle": "1134B",
+      "line": 855489,
+      "rows": 1,
+      "cols": 5,
+      "known": true,
+      "cellCount": 5,
+      "maxContents": 1
+    },
+    {
+      "handle": "11356",
+      "line": 856167,
+      "rows": 1,
+      "cols": 5,
+      "known": true,
+      "cellCount": 5,
+      "maxContents": 1
+    },
+    {
+      "handle": "1193D",
+      "line": 907255,
+      "rows": 1,
+      "cols": 5,
+      "known": true,
+      "cellCount": 5,
+      "maxContents": 1
+    },
+    {
+      "handle": "11947",
+      "line": 907913,
+      "rows": 1,
+      "cols": 5,
+      "known": true,
+      "cellCount": 5,
+      "maxContents": 1
+    },
+    {
+      "handle": "11950",
+      "line": 908535,
+      "rows": 1,
+      "cols": 5,
+      "known": true,
+      "cellCount": 5,
+      "maxContents": 1
+    },
+    {
+      "handle": "11957",
+      "line": 909109,
+      "rows": 1,
+      "cols": 5,
+      "known": true,
+      "cellCount": 5,
+      "maxContents": 1
+    },
+    {
+      "handle": "1195E",
+      "line": 909683,
+      "rows": 1,
+      "cols": 5,
+      "known": true,
+      "cellCount": 5,
+      "maxContents": 1
+    },
+    {
+      "handle": "11ACB",
+      "line": 924717,
+      "rows": 1,
+      "cols": 5,
+      "known": true,
+      "cellCount": 5,
+      "maxContents": 1
+    },
+    {
+      "handle": "11ACD",
+      "line": 925151,
+      "rows": 1,
+      "cols": 5,
+      "known": true,
+      "cellCount": 5,
+      "maxContents": 1
+    },
+    {
+      "handle": "11ACF",
+      "line": 925585,
+      "rows": 1,
+      "cols": 5,
+      "known": true,
+      "cellCount": 5,
+      "maxContents": 1
+    }
+  ]
+}

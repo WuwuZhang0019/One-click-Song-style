@@ -1,0 +1,37 @@
+{
+  "date": "2026-10-14",
+  "source": "C:\\Users\\Zyf\\Downloads\\电施-春秋剧场09.30.dxf",
+  "bytes": 8535078,
+  "sha256": "c7895b7a6c7cbfa390e39dcd10ac3afc30d318d2e0117ed5afb92c77104cfc43",
+  "encoding": "UTF-8",
+  "sections": {
+    "HEADER": 2,
+    "CLASSES": 124,
+    "TABLES": 832,
+    "BLOCKS": 19079,
+    "ENTITIES": 9567,
+    "OBJECTS": 690,
+    "ACDSDATA": 9,
+    "null": 1
+  },
+  "d5RecordCount": 0,
+  "d5References": [],
+  "blockRecordCount": 463,
+  "blockDefinitionCount": 463,
+  "insertCount": 2317,
+  "insertMissingDefinitionCount": 0,
+  "insertMissingDefinitions": [],
+  "modelOwner2EntityCount": 6595,
+  "modelInsertCount": 1241,
+  "modelLayerCounts": {
+    "SYS_说明_E": 1091,
+    "LITE_照明布线_E": 527,
+    "E-S-强电桥架": 423,
+    "E-S-弱电桥架": 346,
+    "SYS_系统标注_E": 342,
+    "E-S-消防桥架": 316,
+    "CABLETRAY_DOTE": 278,
+    "E-S-消防": 241
+  },
+  "duplicateHandles": []
+}
