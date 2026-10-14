@@ -166,6 +166,59 @@ class VerificationRuleTests(unittest.TestCase):
                          next(p.cdr for p in self.cad.records['11ADE']['dxf'] if p.car == 2))
         self.assertIn('table-recompute', self.cad.events)
 
+    def test_style_write_refreshes_field_cache_before_font_write(self):
+        self.single_field()
+        root = self.cad.records['11ADE']
+        child = deepcopy(self.cad.records['11ADF'])
+        self.field_value('11ADE', 2, r'{\Fsimplex,hztxt|c134;%<\_FldIdx 0>%}')
+        style = self.cad.styles['ICDA-STYLE1']
+        style['font'] = ['Arial', TRUE, FALSE, 0, 34]
+        setfont = self.rt.native['vla-setfont']
+
+        def refresh_cache(obj, *args):
+            result = setfont(obj, *args)
+            if obj is style:
+                root['dxf'].append(Pair(999, 'CAD refreshed field cache'))
+            return result
+
+        self.rt.native['vla-setfont'] = refresh_cache
+        self.run_command()
+        self.assertEqual('已完成', self.value('status'))
+        self.assertEqual(1, self.value('fieldFontsChanged'))
+        self.assertEqual(child, self.cad.records['11ADF'])
+        self.assertIn('SimSun', self.cad.dxf(root, 2))
+        log = self.cad.logs.files[self.rt.get('*ocs:logpath*')]
+        self.assertIn('FIELD_PREWRITE_DRIFT', log)
+
+    def test_changed_field_formula_still_stops_and_rolls_back(self):
+        self.single_field()
+        self.field_value('11ADE', 2, r'{\Fsimplex,hztxt|c134;%<\_FldIdx 0>%}')
+        before = deepcopy(self.cad.records)
+        root = self.cad.records['11ADE']
+        style = self.cad.styles['ICDA-STYLE1']
+        style['font'] = ['Arial', TRUE, FALSE, 0, 34]
+        setfont = self.rt.native['vla-setfont']
+
+        def change_formula(obj, *args):
+            result = setfont(obj, *args)
+            if obj is style:
+                self.field_value('11ADE', 2, r'{\Fsimplex,hztxt|c134;%<\_FldIdx 1>%}')
+            return result
+
+        self.rt.native['vla-setfont'] = change_formula
+        undo = self.rt.native['command-s']
+        def restore_field_identity(cmd):
+            result = undo(cmd)
+            root.clear()
+            root.update(deepcopy(before['11ADE']))
+            self.cad.records['11ADE'] = root
+            return result
+        self.rt.native['command-s'] = restore_field_identity
+        self.rt.call('c:YJSTFIX', [])
+        self.assertEqual('失败已回滚', self.value('status'))
+        self.assertEqual(0, self.value('recoverFailed'))
+        self.assertEqual(before, self.cad.records)
+
     def test_field_font_write_failure_rolls_back_without_detaching_field(self):
         self.single_field()
         self.field_value('11ADE', 2, r'{\Fsimplex,hztxt|c134;%<\_FldIdx 0>%}')
