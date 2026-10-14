@@ -110,6 +110,18 @@ class VerificationRuleTests(unittest.TestCase):
         self.assertEqual(fields, self.cad.records)
         self.assertNotIn('start', self.cad.events)
 
+    def test_table_display_cache_link_accepts_native_entity_reference(self):
+        table = self.single_field()
+        block = {'dxf': [Pair(0, 'BLOCK_RECORD'), Pair(5, '101')]}
+        display = {'dxf': [Pair(0, 'MTEXT'), Pair(5, '105'),
+                           Pair(1, r'{\Fsimplex,hztxt|c134;9.5}')]}
+        table['dxf'].extend((Pair(2, '*T3'), Pair(343, block)))
+        self.rt.native['tblobjname'] = lambda kind, name: block if kind == 'BLOCK' else self.cad.styles.get(name)
+        self.rt.native['tblsearch'] = lambda kind, name: [Pair(-2, display)] if kind == 'BLOCK' else None
+        self.rt.native['entnext'] = lambda obj: None
+        result = self.rt.call('OCS:tableDisplayFontCheck', [table])
+        self.assertEqual(['105'], self.rt.call('OCS:assocd', ['mismatch', result, None]))
+
     def test_unknown_professional_class_stays_uncovered(self):
         for kind in ('TDbECabletry', 'TDbEFitting', 'TDbOther', 'TDbECabletryText'):
             self.cad.add(self.cad.entity(kind, kind, ''))
@@ -139,15 +151,35 @@ class VerificationRuleTests(unittest.TestCase):
         self.assertEqual(0, self.value('uncovered'))
         self.assert_preserved(table, before, fields)
 
-    def test_font_override_in_field_wrapper_is_mismatch(self):
+    def test_font_override_in_field_wrapper_is_rewritten_without_detaching_child(self):
         table = self.single_field()
-        self.field_value('11ADE', 2, r'{\fArial;说明}%<\_FldIdx 0>%')
-        before, fields = deepcopy(table), deepcopy(self.cad.records)
+        self.field_value('11ADE', 2, r'{\Fsimplex,hztxt|c134;\W0.8;\C3;%<\_FldIdx 0>%}')
+        before, child = deepcopy(table), deepcopy(self.cad.records['11ADF'])
         self.run_command()
-        self.assertEqual(1, self.value('tableProtectedMismatch'))
-        self.assertEqual(1, self.value('uncovered'))
-        self.assertEqual('部分完成', self.value('status'))
-        self.assert_preserved(table, before, fields)
+        self.assertEqual(1, self.value('fieldFontsChanged'))
+        self.assertEqual(1, self.value('tableProtectedPassed'))
+        self.assertEqual(0, self.value('uncovered'))
+        self.assertEqual('已完成', self.value('status'))
+        self.assertEqual(before, table)
+        self.assertEqual(child, self.cad.records['11ADF'])
+        self.assertEqual(r'{\FSimSun|c134|pf22;\W0.8;\C3;%<\_FldIdx 0>%}',
+                         next(p.cdr for p in self.cad.records['11ADE']['dxf'] if p.car == 2))
+        self.assertIn('table-recompute', self.cad.events)
+
+    def test_field_font_write_failure_rolls_back_without_detaching_field(self):
+        self.single_field()
+        self.field_value('11ADE', 2, r'{\Fsimplex,hztxt|c134;%<\_FldIdx 0>%}')
+        before = deepcopy(self.cad.records)
+        entmod = self.cad.entmod
+        def fail_field_write(data):
+            if isinstance(next((p.cdr for p in data if p.car == -1), None), dict):
+                raise RuntimeError('FIELD write rejected')
+            return entmod(data)
+        self.rt.native['entmod'] = fail_field_write
+        self.rt.call('c:YJSTFIX', [])
+        self.assertEqual('失败已回滚', self.value('status'))
+        self.assertEqual(0, self.value('recoverFailed'))
+        self.assertEqual(before, self.cad.records)
 
     def test_nontarget_cell_style_is_mismatch(self):
         table = self.single_field()

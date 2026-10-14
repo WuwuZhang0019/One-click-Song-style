@@ -224,7 +224,7 @@ class DiagnosticLoggingTests(unittest.TestCase):
         begin = next(row for row in rows if row[2] == 'BLOCKREF_DIAG_BEGIN')
         self.assertIn('D5', str(begin[4]))
         self.assertIn('index', str(begin[4]))
-        self.assertIn('2026-10-14-table-display-v6', str(rows[0]))
+        self.assertIn('2026-10-14-field-font-v7', str(rows[0]))
         dxf = [row for row in rows if row[2] == 'BLOCKREF_DIAG_DXF']
         self.assertEqual(1, len(dxf))
         self.assertIn('ATTR_BLOCK', str(dxf))

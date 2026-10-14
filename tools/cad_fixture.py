@@ -113,6 +113,7 @@ class CadFixture:
             'vla-startundomark': self.start,
             'vla-endundomark': lambda doc: self.events.append('end'),
             'vla-regen': lambda doc, mode: self.events.append('regen'),
+            'vla-recomputetableblock': lambda table: self.events.append('table-recompute'),
             'vla-put-textstring': self.put_text,
             'vla-put-lock': self.put_lock,
             'command-s': self.command,
@@ -156,7 +157,7 @@ class CadFixture:
         return deepcopy(self.styles[name]['dxf'])
 
     def tracked(self):
-        objects = [self.styles, self.layer]
+        objects = [self.styles, self.layer, self.records]
         for block in self.blocks:
             for obj in block['items']:
                 for candidate in [obj] + obj.get('attributes', []) + obj.get('constants', []):
@@ -260,6 +261,9 @@ class CadFixture:
 
     def entmod(self, data):
         name = next(cdr(p) for p in data if car(p) == -1)
+        if isinstance(name, dict):
+            name['dxf'] = deepcopy([p for p in data if car(p) != -1])
+            return data
         self.styles[name]['dxf'] = deepcopy(data)
         return data
 
