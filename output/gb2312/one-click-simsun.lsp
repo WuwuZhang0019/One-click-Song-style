@@ -72,8 +72,8 @@
 ;;   (setq res (OCS:addProblem res "error" "Blocks 集合接口不可用")))
 
 ;;; ------------------------- 全局状态 -------------------------
-(setq *OCS:Version*      "0.2.13")
-(setq *OCS:DiagnosticsVersion* "2026-10-14-font-verify-v5")
+(setq *OCS:Version*      "0.2.14")
+(setq *OCS:DiagnosticsVersion* "2026-10-14-table-display-v6")
 (setq *OCS:TableContentCounts* nil)
 (setq *OCS:ScanContext* nil)
 (setq *OCS:CollectReverse* nil)
@@ -2407,6 +2407,9 @@
     (princ (strcat "\n受保护单元格只读核验：通过 " (itoa (OCS:assocd "tableProtectedPassed" report 0))
       "　不一致 " (itoa (OCS:assocd "tableProtectedMismatch" report 0))
       "　无法核验 " (itoa (OCS:assocd "tableProtectedUnknown" report 0)))))
+  (if (> (OCS:assocd "tableDisplayMismatch" report 0) 0)
+    (princ (strcat "\n表格显示文字仍有非宋体局部字体："
+      (itoa (OCS:assocd "tableDisplayMismatch" report 0)))))
   (if (OCS:assocd "tchChecked" report nil)
     (princ (strcat "\n天正公开字体核验：通过 " (itoa (OCS:assocd "tchPassed" report 0))
       "　不一致 " (itoa (OCS:assocd "tchMismatch" report 0))
@@ -2570,10 +2573,10 @@
 
 (defun c:YJSTFIX ()
   ;; 日期：2026-10-14。独立命令避开工具集同名 .NET YJST 入口；被旧版覆盖时拒绝执行。
-  (if (and (equal *OCS:Version* "0.2.13")
-           (equal *OCS:DiagnosticsVersion* "2026-10-14-font-verify-v5"))
+  (if (and (equal *OCS:Version* "0.2.14")
+           (equal *OCS:DiagnosticsVersion* "2026-10-14-table-display-v6"))
     (c:YJST)
-    (princ "\n当前宋体脚本已被旧版覆盖。请重新 APPLOAD v0.2.13 修复文件，然后输入 YJSTFIX。"))
+    (princ "\n当前宋体脚本已被旧版覆盖。请重新 APPLOAD v0.2.14 修复文件，然后输入 YJSTFIX。"))
   (princ)
 )
 
@@ -3246,9 +3249,48 @@
     "state" state "contentType" typ "count" count)
 )
 
+;;; 日期：2026-10-14。字段单元格的显示块可能保留独立的 MTEXT 局部字体。
+;;; 只读核对 TABLE 的 343 块记录引用；不改写由表格再生生成的 *T 显示缓存。
+(defun OCS:tableDisplayText (data / out pair)
+  (setq out "")
+  (foreach pair data
+    (if (= (car pair) 3) (setq out (strcat out (cdr pair)))))
+  (foreach pair data
+    (if (= (car pair) 1) (setq out (strcat out (cdr pair)))))
+  out
+)
+
+(defun OCS:tableDisplayFontCheck (obj / data name record ref blockEntry ent item text scan mismatch inspected)
+  (setq data (entget (vlax-vla-object->ename obj)) name (OCS:assocd 2 data nil)
+        ref (OCS:assocd 343 data nil))
+  (if (and (OCS:stringp name) (= (substr (strcase name) 1 2) "*T")
+           (OCS:stringp ref) (setq record (tblobjname "BLOCK" name))
+           (= (strcase (OCS:assocd 5 (entget record) "")) (strcase ref))
+           (setq blockEntry (tblsearch "BLOCK" name)))
+    (progn
+      (setq ent (OCS:assocd -2 blockEntry nil) mismatch nil inspected 0)
+      (while ent
+        (setq item (entget ent))
+        (if (= (OCS:assocd 0 item "") "ENDBLK")
+          (setq ent nil)
+          (progn
+            (if (= (OCS:assocd 0 item "") "MTEXT")
+              (progn
+                (setq inspected (1+ inspected) text (OCS:tableDisplayText item)
+                      scan (OCS:NormalizeFontRuns text (OCS:fontTarget)))
+                (if (or (OCS:assocd "issues" scan nil)
+                        (> (OCS:assocd "changes" scan 0) 0))
+                  (setq mismatch (cons (OCS:assocd 5 item "?") mismatch)))))
+            (setq ent (entnext ent)))))
+      (list "block" name "inspected" inspected "mismatch" (reverse mismatch)))
+    nil)
+)
+
 (defun OCS:verifyProtectedCells (report / candidates item r saved passed mismatch unknown details resolved
-                                      entry match kept removed currentHandle key *OCS:TableContentCounts*)
-  (setq candidates (OCS:assocd "protectedCells" *OCS:Plan* nil) passed 0 mismatch 0 unknown 0 removed 0)
+                                      entry match kept removed currentHandle key display checked cache displayMismatch
+                                      *OCS:TableContentCounts*)
+  (setq candidates (OCS:assocd "protectedCells" *OCS:Plan* nil) passed 0 mismatch 0 unknown 0 removed 0
+        displayMismatch 0)
   (foreach item candidates
     (if (not (equal currentHandle (OCS:assocd "handle" item nil)))
       (setq currentHandle (OCS:assocd "handle" item nil) *OCS:TableContentCounts* nil))
@@ -3277,6 +3319,24 @@
   (setq report (OCS:putPair report "tableProtectedPassed" passed))
   (setq report (OCS:putPair report "tableProtectedMismatch" mismatch))
   (setq report (OCS:putPair report "tableProtectedUnknown" unknown))
+  (foreach item candidates
+    (setq key (OCS:assocd "handle" item nil))
+    (if (and key (not (member key checked)))
+      (progn
+        (setq checked (cons key checked)
+              cache (OCS:tableDisplayFontCheck (OCS:assocd "obj" item nil)))
+        (if cache
+          (progn
+            (OCS:trace "TABLE_DISPLAY_VERIFY" (list "handle" key "block"
+              (OCS:assocd "block" cache "") "mtext" (OCS:assocd "inspected" cache 0)
+              "mismatch" (OCS:assocd "mismatch" cache nil)))
+            (foreach display (OCS:assocd "mismatch" cache nil)
+              (setq displayMismatch (1+ displayMismatch))
+              (setq report (OCS:putPair report "uncovered" (1+ (OCS:assocd "uncovered" report 0))))
+              (setq report (OCS:putPair report "uncoveredDetail"
+                (append (OCS:assocd "uncoveredDetail" report nil)
+                  (list (list "TABLE_DISPLAY_FONT" key display)))))))))))
+  (setq report (OCS:putPair report "tableDisplayMismatch" displayMismatch))
   (OCS:putPair report "tableProtectedDetails" (reverse details))
 )
 

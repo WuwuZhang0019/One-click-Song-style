@@ -88,6 +88,28 @@ class VerificationRuleTests(unittest.TestCase):
         self.assertEqual(20, log.count('TABLE_PROTECTED_VERIFY'))
         self.assertEqual(47, log.count('NON_TEXT_EXCLUDED'))
 
+    def test_field_table_display_cache_retains_two_nontarget_font_runs(self):
+        table = self.single_field()
+        table['dxf'].extend((Pair(2, '*T3'), Pair(343, '101')))
+        block = {'dxf': [Pair(0, 'BLOCK_RECORD'), Pair(5, '101')]}
+        first = {'dxf': [Pair(0, 'MTEXT'), Pair(5, '105'),
+                         Pair(1, r'{\Fsimplex,hztxt|c134;9.5}')]}
+        second = {'dxf': [Pair(0, 'MTEXT'), Pair(5, '108'),
+                          Pair(1, r'{\Fsimplex,hztxt|c134;10.4}')]}
+        end = {'dxf': [Pair(0, 'ENDBLK')]}
+        self.rt.native['tblobjname'] = lambda kind, name: block if kind == 'BLOCK' and name == '*T3' else self.cad.styles.get(name)
+        self.rt.native['tblsearch'] = lambda kind, name: [Pair(-2, first)] if kind == 'BLOCK' and name == '*T3' else None
+        self.rt.native['entnext'] = lambda obj: second if obj is first else end if obj is second else None
+        before, fields = deepcopy(table), deepcopy(self.cad.records)
+        self.run_command()
+        self.assertEqual('部分完成', self.value('status'))
+        self.assertEqual(1, self.value('tableProtectedPassed'))
+        self.assertEqual(2, self.value('uncovered'))
+        self.assertEqual(2, self.value('tableDisplayMismatch'))
+        self.assertEqual(before, table)
+        self.assertEqual(fields, self.cad.records)
+        self.assertNotIn('start', self.cad.events)
+
     def test_unknown_professional_class_stays_uncovered(self):
         for kind in ('TDbECabletry', 'TDbEFitting', 'TDbOther', 'TDbECabletryText'):
             self.cad.add(self.cad.entity(kind, kind, ''))
