@@ -72,8 +72,8 @@
 ;;   (setq res (OCS:addProblem res "error" "Blocks 集合接口不可用")))
 
 ;;; ------------------------- 全局状态 -------------------------
-(setq *OCS:Version*      "0.2.17")
-(setq *OCS:DiagnosticsVersion* "2026-10-14-field-font-v9")
+(setq *OCS:Version*      "0.2.18")
+(setq *OCS:DiagnosticsVersion* "2026-10-14-field-font-v10")
 (setq *OCS:TableContentCounts* nil)
 (setq *OCS:ScanContext* nil)
 (setq *OCS:CollectReverse* nil)
@@ -2588,10 +2588,10 @@
 
 (defun c:YJSTFIX ()
   ;; 日期：2026-10-14。独立命令避开工具集同名 .NET YJST 入口；被旧版覆盖时拒绝执行。
-  (if (and (equal *OCS:Version* "0.2.17")
-           (equal *OCS:DiagnosticsVersion* "2026-10-14-field-font-v9"))
+  (if (and (equal *OCS:Version* "0.2.18")
+           (equal *OCS:DiagnosticsVersion* "2026-10-14-field-font-v10"))
     (c:YJST)
-    (princ "\n当前宋体脚本已被旧版覆盖。请重新 APPLOAD v0.2.17 修复文件，然后输入 YJSTFIX。"))
+    (princ "\n当前宋体脚本已被旧版覆盖。请重新 APPLOAD v0.2.18 修复文件，然后输入 YJSTFIX。"))
   (princ)
 )
 
@@ -3373,7 +3373,8 @@
     (foreach edit (OCS:assocd "fieldEdits" *OCS:Plan* nil)
       (if (= (OCS:assocd "tableHandle" edit nil) handle)
         (setq table (OCS:assocd "table" edit nil))))
-    (setq r (OCS:tracedCall 'vla-RecomputeTableBlock (list table)))
+    ;; 日期：2026-10-14。ActiveX 必须显式传入 bForceUpdate；字段写入后强制更新显示块。
+    (setq r (OCS:tracedCall 'vla-RecomputeTableBlock (list table :vlax-true)))
     (if (vl-catch-all-error-p r)
       (OCS:fail (strcat "表格 " handle " 重建显示块失败：" (vl-catch-all-error-message r)))))
   (list "changed" count)

@@ -165,6 +165,28 @@ class VerificationRuleTests(unittest.TestCase):
         self.assertEqual(r'{\FSimSun|c134|pf22;\W0.8;\C3;%<\_FldIdx 0>%}',
                          next(p.cdr for p in self.cad.records['11ADE']['dxf'] if p.car == 2))
         self.assertIn('table-recompute', self.cad.events)
+        self.assertEqual([('1134B', TRUE)], self.cad.table_recompute_calls)
+
+    def test_table_recompute_failure_rolls_back_field_font_write(self):
+        table = self.single_field()
+        self.field_value('11ADE', 2, r'{\Fsimplex,hztxt|c134;%<\_FldIdx 0>%}')
+        before_table, before_fields = deepcopy(table), deepcopy(self.cad.records)
+
+        def reject_recompute(obj, force_update):
+            self.assertIs(obj, table)
+            self.assertEqual(TRUE, force_update)
+            self.assertIn('SimSun', self.cad.dxf(self.cad.records['11ADE'], 2))
+            raise RuntimeError('injected RecomputeTableBlock failure')
+
+        self.rt.native['vla-recomputetableblock'] = reject_recompute
+        self.rt.call('c:YJSTFIX', [])
+        self.assertEqual('失败已回滚', self.value('status'))
+        self.assertEqual(1, self.value('errors'))
+        self.assertEqual(0, self.value('recoverFailed'))
+        self.assertIn('injected RecomputeTableBlock failure', str(self.value('errorDetail')))
+        self.assertEqual(1, self.cad.events.count('undo'))
+        self.assertEqual(before_table, table)
+        self.assertEqual(before_fields, self.cad.records)
 
     def test_style_write_refreshes_field_reactor_and_cache_before_font_write(self):
         self.single_field()

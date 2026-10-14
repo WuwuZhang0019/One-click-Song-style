@@ -39,7 +39,7 @@ class CommandEntryTests(unittest.TestCase):
         self.assertIsNone(self.rt.get('*ocs:lastreport*'))
         self.assertNotIn('(c:YJSTFIX)', self.prefix + self.suffix)
         self.rt.call('c:YJSTFIX', [])
-        self.assertEqual('0.2.15', self.version)
+        self.assertEqual('0.2.18', self.version)
         self.assertEqual('已完成', self.report('status'))
         self.assertEqual({0}, set(indices))
         self.assertIn('SimSun', table['cells'][0][0]['contents'][0]['text'])
@@ -47,8 +47,8 @@ class CommandEntryTests(unittest.TestCase):
         rows = [json.loads(row) for row in log.splitlines()]
         begins = [row for row in rows if row[2] == 'RUN_BEGIN']
         self.assertEqual(1, len(begins))
-        self.assertIn('0.2.15', str(begins[0]))
-        self.assertIn('2026-10-14-field-font-v7', str(begins[0]))
+        self.assertIn('0.2.18', str(begins[0]))
+        self.assertIn('2026-10-14-field-font-v10', str(begins[0]))
         self.assertEqual('RUN_END', rows[-1][2])
         self.assertNotIn('(command', self.suffix)
         self.assertNotIn('(load', self.prefix + self.suffix)

@@ -83,6 +83,7 @@ class CadFixture:
         ]
         self.doc = dict(Blocks={'items': self.blocks}, Layers={'items': [self.layer]}, ReadOnly=FALSE)
         self.events = []
+        self.table_recompute_calls = []
         self.snapshot = None
         self.enumeration = iter(())
         rt = runtime
@@ -113,7 +114,7 @@ class CadFixture:
             'vla-startundomark': self.start,
             'vla-endundomark': lambda doc: self.events.append('end'),
             'vla-regen': lambda doc, mode: self.events.append('regen'),
-            'vla-recomputetableblock': lambda table: self.events.append('table-recompute'),
+            'vla-recomputetableblock': self.recompute_table_block,
             'vla-put-textstring': self.put_text,
             'vla-put-lock': self.put_lock,
             'command-s': self.command,
@@ -278,8 +279,15 @@ class CadFixture:
 
     def start(self, doc):
         self.undo_objects = self.tracked()
+        self.undo_record_objects = dict(self.records)
         self.snapshot = deepcopy(self.undo_objects)
         self.events.append('start')
+
+    def recompute_table_block(self, table, force_update):
+        if type(force_update) is str or force_update not in (TRUE, FALSE):
+            raise TypeError('RecomputeTableBlock requires a COM Boolean constant')
+        self.table_recompute_calls.append((table['Handle'], force_update))
+        self.events.append('table-recompute')
 
     def put_text(self, obj, value):
         obj['TextString'] = value
@@ -296,4 +304,9 @@ class CadFixture:
         for actual, saved in zip(self.undo_objects, self.snapshot):
             actual.clear()
             actual.update(deepcopy(saved))
+        # 日期：2026-10-14。模拟原生 Undo 保留字段实体身份，计划中的引用仍读到恢复后的记录。
+        for handle, actual in self.undo_record_objects.items():
+            actual.clear()
+            actual.update(self.records[handle])
+            self.records[handle] = actual
         return None  # AutoLISP command 正常完成也返回 nil。
